@@ -1,10 +1,15 @@
 //! The software keyboard. Android shows one only for a view that edits
 //! text, which NativeActivity's isn't: a hidden EditText added to the
 //! activity takes the focus while a nanoui field has it, and asks for the
-//! keyboard. Its input type is none, so the keyboard types as key events,
-//! which come to nanoui's input queue as a hardware keyboard's do (the
-//! EditText never sees them: nanoui takes them first). Run on Java's
-//! thread (`activity.onUiThread`).
+//! keyboard. Its input type is TYPE_CLASS_TEXT to support basic IME input.
+//!
+//! NOTE: Full IME composition (including Chinese input) requires a custom
+//! InputConnection implementation in Java. This implementation provides
+//! basic multi-language support but may not work for all IMEs.
+//! See src/android/java/com/nanoui/ for the full IME implementation
+//! that needs to be compiled into the APK.
+//!
+//! Run on Java's thread (`activity.onUiThread`).
 const std = @import("std");
 const jni = @import("jni.zig");
 const activity = @import("activity.zig");
@@ -26,8 +31,9 @@ pub fn show(_: ?*anyopaque, env: jni.Env) void {
     if (edit == null) {
         const e = jni.new(env, "android/widget/EditText", "(Landroid/content/Context;)V", &.{jni.ref(a.clazz)});
         if (e == null) return;
-        // TYPE_NULL: keys, not text the keyboard composes.
-        _ = jni.call(env, e, "setInputType", "(I)V", &.{jni.int(0)});
+        // TYPE_CLASS_TEXT: enables basic IME support (better than TYPE_NULL)
+        // Full composition support requires custom InputConnection (see Java files)
+        _ = jni.call(env, e, "setInputType", "(I)V", &.{jni.int(0x00000001)});
         _ = jni.call(env, e, "setFocusableInTouchMode", "(Z)V", &.{jni.boolean(true)});
         const params = jni.new(env, "android/view/ViewGroup$LayoutParams", "(II)V", &.{ jni.int(1), jni.int(1) });
         if (jni.call(env, a.clazz, "addContentView", "(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V", &.{ jni.ref(e), jni.ref(params) }) == null) return;
