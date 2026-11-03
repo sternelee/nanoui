@@ -194,3 +194,36 @@ test "a frosted pane only blurs: its middle stays as it was" {
     const mid = at(shown, 1, 100, 100)[1];
     try testing.expect(mid > 60 and mid < 200);
 }
+
+/// A box that meets the top of the window, shrunk under a press: the notch
+/// island's press. About its middle the shrink lifts its top edge off the
+/// screen, a seam over the menu bar; anchored to the edge, it stays on it.
+const Pressed = struct {
+    fn view(_: *Pressed, c: *ui.Context) void {
+        _ = c.open(.{ .width = .fill, .height = .fill, .background = white }, null);
+        defer c.end();
+        ui.div(c).absolute().offset(50, 0).w(100).h(40).bg(red).scale(0.5).scaleAnchor(0.5, 0).end();
+        ui.div(c).absolute().offset(150, 0).w(40).h(40).bg(blue).scale(0.5).end();
+    }
+};
+
+test "scale draws from its anchor: a box on the screen's edge keeps it" {
+    const gpa = testing.allocator;
+    var s: Pressed = .{};
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, Pressed.view), .{ .width = 220, .height = 120 });
+    defer t.deinit();
+    t.settle(0.1);
+    const shown = try t.render(gpa);
+    defer shown.deinit(gpa);
+    // From its top edge: x 75 to 125, y 0 to 20, so its top row is the
+    // window's first row, with nothing open above it.
+    try testing.expect(isRed(at(shown, t.scale, 100, 1)));
+    try testing.expect(isRed(at(shown, t.scale, 76, 1)));
+    try testing.expect(isWhite(at(shown, t.scale, 72, 1)));
+    try testing.expect(isWhite(at(shown, t.scale, 100, 22)));
+    // About its middle, the same box would start 10 points down: x 160 to
+    // 180, y 10 to 30.
+    try testing.expect(isWhite(at(shown, t.scale, 170, 5)));
+    try testing.expect(isBlue(at(shown, t.scale, 170, 15)));
+}

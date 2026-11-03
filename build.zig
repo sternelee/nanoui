@@ -5,7 +5,7 @@ pub const ios = @import("tools/ios/bundle.zig");
 /// Android APKs, likewise: `@import("nanoui").android.apk(b, lib, .{ .name = "Notes", .id = "com.example.notes" })`.
 pub const android = @import("tools/android/apk.zig");
 
-const examples = [_][]const u8{ "hello", "counter", "gallery", "ruler", "duo", "board", "basics", "map", "turn", "access", "todo", "sgbus", "browser", "drop", "scenes" };
+const examples = [_][]const u8{ "hello", "counter", "gallery", "ruler", "duo", "board", "basics", "map", "turn", "access", "todo", "sgbus", "browser", "drop", "scenes", "notch" };
 const frameworks = [_][]const u8{ "AppKit", "WebKit", "Metal", "QuartzCore", "CoreText", "CoreGraphics", "CoreFoundation", "Foundation", "ImageIO", "UniformTypeIdentifiers", "CoreVideo" };
 const ios_frameworks = [_][]const u8{ "UIKit", "CoreLocation", "MapKit", "Metal", "QuartzCore", "CoreText", "CoreGraphics", "CoreFoundation", "Foundation", "ImageIO", "UniformTypeIdentifiers", "CoreVideo" };
 
@@ -138,6 +138,8 @@ pub fn build(b: *std.Build) void {
         // macOS and iOS, WebView2 on Windows, WebKitGTK on Linux.
         const has_pages = os == .macos or os == .ios or os == .windows or (os == .linux and !target.result.abi.isAndroid());
         if (!has_pages and (std.mem.eql(u8, name, "hello") or std.mem.eql(u8, name, "browser"))) continue;
+        // The notch example is the Mac's: an island over the menu bar.
+        if (os != .macos and std.mem.eql(u8, name, "notch")) continue;
         if (os == .ios) {
             addIosExample(b, name, target, optimize, nanoui);
             continue;

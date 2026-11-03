@@ -136,7 +136,7 @@ the state.
 <summary>What's in the toolkit</summary>
 
 - **Layout:** rows, columns, cards and scroll views, with flexbox grow,
-  shrink, absolute placement, and maximum sizes.
+  shrink, absolute placement, maximum sizes, and `safeArea()` padding clear of the Mac's notch and the phone's bars.
 - **Elements:** GPUI-style method chains, such as
   `ui.div(c).row().gap(8).bg(...)`.
 - **Lists:** a virtualized list (`ui.list`) that builds only the rows in view.

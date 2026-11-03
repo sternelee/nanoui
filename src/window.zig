@@ -141,6 +141,7 @@ pub const Window = struct {
             .page => |p| self.page = try Page.create(self, p),
             .view => |v| self.surface = try Surface.create(self, v, options.theme),
         }
+        if (self.surface) |sf| if (options.transparent and borderless) sf.setTransparent(true);
         if (options.traffic_lights) |p| if (options.title_bar == .hidden and !borderless) {
             self.lights = Lights.init(nswindow, p.x, p.y);
             Lights.observe(nswindow, delegate);
@@ -161,6 +162,15 @@ pub const Window = struct {
                 objc.msg(void, layer, "setCornerRadius:", .{@as(f64, 12)});
                 objc.msg(void, layer, "setMasksToBounds:", .{objc.YES});
             }
+        }
+        // A borderless window asked to be transparent: only what the view
+        // draws shows, no system shadow (it would trace a line around the
+        // shape, at the screen's edge), and what isn't drawn takes no
+        // clicks (`hitTest`).
+        if (options.transparent and borderless) {
+            objc.msg(void, nswindow, "setOpaque:", .{objc.NO});
+            objc.msg(void, nswindow, "setBackgroundColor:", .{objc.msg(objc.Object, objc.class("NSColor"), "clearColor", .{})});
+            objc.msg(void, nswindow, "setHasShadow:", .{objc.NO});
         }
 
         if (options.screen) |id| if (screen_list.byId(id)) |sc| {
@@ -361,7 +371,7 @@ pub const Window = struct {
     /// What `--nanoui-snapshot` draws of this window, if it shows native UI.
     pub fn nativeView(self: *Window) ?NativeView {
         const s = self.surface orelse return null;
-        return .{ .view = s.view, .width = s.size.w, .height = s.size.h, .scale = s.scale, .theme = s.theme_override };
+        return .{ .view = s.view, .width = s.size.w, .height = s.size.h, .scale = s.scale, .theme = s.theme_override, .safe_area = s.insets, .transparent = s.transparent };
     }
 
     pub fn redraw(self: *Window) void {

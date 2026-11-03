@@ -67,7 +67,9 @@ pub const Target = struct {
     /// Moved by (points), as `Style.offset` moves a box.
     x: ?f32 = null,
     y: ?f32 = null,
-    /// Drawn larger or smaller about its center.
+    /// Drawn larger or smaller about `Style.scale_anchor`: its center,
+    /// unless the box sets another (an island on the screen's top edge
+    /// scales from that edge).
     scale: ?f32 = null,
     opacity: ?f32 = null,
     width: ?f32 = null,

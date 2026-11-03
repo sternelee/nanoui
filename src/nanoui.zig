@@ -138,6 +138,7 @@ pub const shell = plat.desktop.shell;
 pub const Directory = plat.desktop.Directory;
 pub const path = plat.desktop.path;
 pub const isDark = plat.desktop.isDark;
+
 pub const accentColor = plat.desktop.accentColor;
 /// Updates from GitHub's releases for a signed app bundle (macOS).
 pub const update = @import("update.zig");

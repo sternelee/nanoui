@@ -89,7 +89,7 @@ fn hitTest(obj: objc.Object, _: objc.SEL, point: objc.CGPoint) callconv(.c) ?obj
     const local = objc.msg(objc.CGPoint, obj, "convertPoint:fromView:", .{ point, super });
     const p: types.Point = .{ .x = @floatCast(local.x), .y = @floatCast(local.y) };
     if (p.x < 0 or p.y < 0 or p.x >= s.size.w or p.y >= s.size.h) return null;
-    if (s.transparent and s.ctx.inStageHoleAt(p)) {
+    if (s.transparent and s.ctx.active == 0 and !s.ctx.hitAt(p)) {
         s.cursor_dirty = true;
         return null;
     }

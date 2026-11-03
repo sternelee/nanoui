@@ -66,6 +66,8 @@ pub fn snapshot(app: anytype, path: []const u8) !void {
         var t: ui.Tester = undefined;
         try t.init(app.gpa, s.view, .{ .width = s.width, .height = s.height, .scale = s.scale, .dark = app.flags.dark, .theme = s.theme });
         defer t.deinit();
+        t.ctx.safe_area = s.safe_area;
+        t.ctx.transparent_root = s.transparent;
         // Live state first: the event loop runs (replies, timers) without a
         // visible window, and the view is drawn as it goes, so what it asks
         // for as it draws (a picture, a map's tiles) is asked for and answered.

@@ -8,6 +8,7 @@ const objc = @import("objc.zig");
 const ui = @import("ui/ui.zig");
 const App = @import("app.zig").App;
 const Window = @import("window.zig").Window;
+const mac_screens = @import("screens.zig");
 
 const Page = struct {
     fn view(_: *Page, c: *ui.Context) void {
@@ -76,6 +77,48 @@ test "skip_taskbar leaves Command-` and the Window menu, all_spaces still joins 
     try testing.expect(yes(tool, "isExcludedFromWindowsMenu"));
     try testing.expect(objc.msg(objc.NSUInteger, plain.nswindow, "collectionBehavior", .{}) & (1 << 6) == 0);
     try testing.expect(!yes(plain, "isExcludedFromWindowsMenu"));
+}
+
+test "safe area: a hidden title bar's strip, or nothing with one" {
+    const app = try makeApp(testing.allocator);
+    defer freeApp(app);
+    var p: Page = .{};
+    const titled = try app.newWindow(.{ .title = "titled", .width = 200, .height = 120, .visible = false, .content = .{ .view = .init(&p, Page.view) } });
+    const hidden = try app.newWindow(.{ .title = "hidden", .width = 200, .height = 120, .visible = false, .title_bar = .hidden, .content = .{ .view = .init(&p, Page.view) } });
+
+    // A titled window's view sits below its title bar: nothing overlaps it.
+    const t = titled.surface.?.insets;
+    try testing.expectEqual(@as(f32, 0), t.top + t.left + t.bottom + t.right);
+    // Under a hidden one, AppKit keeps the strip the traffic lights sit in
+    // out of the content's safe area (the notch's row too, in full screen),
+    // and it reaches views as `Context.safe_area`.
+    const h = hidden.surface.?.insets;
+    try testing.expect(h.top > 0);
+    try testing.expectEqual(@as(f32, 0), h.left + h.bottom + h.right);
+    try testing.expectEqual(h.top, hidden.surface.?.ctx.safe_area.top);
+    try testing.expectEqual(@as(f32, 0), titled.surface.?.ctx.safe_area.top);
+}
+
+test "a notch app's window: over the menu bar, clear where nothing is drawn" {
+    const app = try makeApp(testing.allocator);
+    defer freeApp(app);
+    const screens = objc.msg(objc.Object, objc.class("NSScreen"), "screens", .{});
+    if (objc.msg(objc.NSUInteger, screens, "count", .{}) == 0) return error.SkipZigTest;
+    var p: Page = .{};
+    const isle = try app.newWindow(.{ .title = "isle", .width = 400, .height = 32, .visible = false, .x = 10, .y = 0, .decorations = false, .kind = .panel, .non_activating = true, .all_spaces = true, .skip_taskbar = true, .level = .island, .transparent = true, .content = .{ .view = .init(&p, Page.view) } });
+
+    // Above the menu bar's own level (24), as a status item's window is.
+    try testing.expectEqual(@as(objc.NSInteger, 26), objc.msg(objc.NSInteger, isle.nswindow, "level", .{}));
+    // Nothing behind what the view draws, no shadow tracing a line around
+    // it at the screen's edge, and the surface knows.
+    try testing.expect(objc.msg(objc.BOOL, isle.nswindow, "isOpaque", .{}) == objc.NO);
+    try testing.expect(objc.msg(objc.BOOL, isle.nswindow, "hasShadow", .{}) == objc.NO);
+    try testing.expect(isle.surface.?.transparent);
+    // At the top of the screen, where the notch's row is.
+    try testing.expectApproxEqAbs(@as(f64, 0), isle.frame().y, 1.0);
+    // That row's height: a menu bar at least.
+    const scr = mac_screens.mainScreen() orelse return error.SkipZigTest;
+    try testing.expect(scr.frame.width > 0 and scr.frame.height > 0 and scr.menuBarHeight() >= 24);
 }
 
 test "opacity is the window's alpha, at creation and after" {

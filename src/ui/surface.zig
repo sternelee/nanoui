@@ -26,6 +26,8 @@ pub const KeysReleased = struct { ctx: ?*anyopaque, func: *const fn (ctx: ?*anyo
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 const pacing = @import("pacing.zig");
 const link_pace = @import("surface_pacing.zig");
+/// NSEdgeInsets.
+const Insets = extern struct { top: f64 = 0, left: f64 = 0, bottom: f64 = 0, right: f64 = 0 };
 pub const Surface = struct {
     gpa: std.mem.Allocator,
     window: *Window,
@@ -43,6 +45,9 @@ pub const Surface = struct {
     text_queue: textinput.Queue,
     size: types.Size = .{},
     scale: f32 = 2,
+    /// What the system draws over the view, in points: the strip a hidden
+    /// title bar leaves under the traffic lights, the notch in full screen.
+    insets: types.Edges = .{},
     last_frame_time: f64 = 0,
     start_time: f64 = 0,
     tick_scheduled: bool = false,
@@ -242,6 +247,8 @@ pub const Surface = struct {
         const b = objc.msg(objc.CGRect, self.nsview, "bounds", .{});
         self.size = .{ .w = @floatCast(b.size.width), .h = @floatCast(b.size.height) };
         self.scale = @floatCast(objc.msg(f64, self.window.nswindow, "backingScaleFactor", .{}));
+        const i = objc.msg(Insets, self.nsview, "safeAreaInsets", .{});
+        self.insets = .{ .top = @floatCast(i.top), .left = @floatCast(i.left), .bottom = @floatCast(i.bottom), .right = @floatCast(i.right) };
         self.text.setScale(self.scale);
         self.renderer.resize(self.size, self.scale);
         self.geometry_changed = true;
@@ -249,7 +256,7 @@ pub const Surface = struct {
     }
 
     pub fn screenChanged(self: *Surface) void {
-        self.updateMaxFps();
+        self.updateGeometry();
     }
 
     const updateMaxFps = link_pace.updateMaxFps;
@@ -323,6 +330,7 @@ pub const Surface = struct {
         self.last_frame_time = now;
         self.frame_kind = kind;
         self.ctx.transparent_root = self.transparent;
+        c.safe_area = self.insets;
         a11y.beforeFrame(self);
         c.input.window_active = self.window.isFocused();
         c.window_focused = c.input.window_active;

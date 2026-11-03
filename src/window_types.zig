@@ -48,7 +48,9 @@ pub const Content = union(enum) {
 
 pub const TitleBar = enum {
     default,
-    /// Content under a transparent title bar; the traffic lights stay.
+    /// Content under a transparent title bar; the traffic lights stay,
+    /// and the strip they sit in (the notch too, in full screen) reaches
+    /// views as `Context.safe_area`.
     hidden,
     /// No frame at all: a panel with rounded corners and a shadow, above
     /// other windows, that takes keys without bringing its app forward and
@@ -183,11 +185,13 @@ pub fn Options(comptime Window: type) type {
         /// No background: only what the view draws shows, antialiased
         /// against what is behind the window (a launcher's rounded panel,
         /// with nothing square behind its corners). For a borderless window
-        /// (`decorations = false`); ignored on one with a frame. Windows:
-        /// per-pixel alpha (`UpdateLayeredWindow`, the CPU renderer), and
-        /// clicks on what isn't drawn fall through. Linux (GTK 3): an RGBA
-        /// window where a compositor runs; where none does, the window is
-        /// cut to what is more than half opaque. Elsewhere it changes nothing.
+        /// (`decorations = false`); ignored on one with a frame. macOS:
+        /// the window shows only what the view draws, and clicks on what
+        /// isn't drawn fall through. Windows: per-pixel alpha
+        /// (`UpdateLayeredWindow`, the CPU renderer), and clicks on what
+        /// isn't drawn fall through. Linux (GTK 3): an RGBA window where
+        /// a compositor runs; where none does, the window is cut to what
+        /// is more than half opaque.
         transparent: bool = false,
         /// Keeps the window out of the taskbar and out of Alt-Tab
         /// (`WS_EX_TOOLWINDOW` on Windows; the skip-taskbar and skip-pager
@@ -271,4 +275,10 @@ pub const NativeView = struct {
     height: f32,
     scale: f32,
     theme: ?ui.Theme,
+    /// What the system draws over the window, as its view sees it: on the
+    /// Mac a hidden title bar's strip, the notch in full screen; zero
+    /// elsewhere so far. `--nanoui-snapshot` draws the view with it.
+    safe_area: ui.Edges = .{},
+    /// The window shows only what its view draws (`transparent`).
+    transparent: bool = false,
 };

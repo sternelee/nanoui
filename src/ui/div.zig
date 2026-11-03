@@ -69,8 +69,9 @@ pub const Div = struct {
         return d;
     }
     /// Sets the padding to the safe area (`Context.safe_area`), keeping
-    /// content clear of what the system draws over the window: zero on
-    /// the desktop. It replaces the padding set before, as `p` does.
+    /// content clear of what the system draws over the window: the Mac's
+    /// hidden title bar strip and notch, iOS's bars, nothing with a title
+    /// bar. It replaces the padding set before, as `p` does.
     pub fn safeArea(d: Div) Div {
         return d.set("padding", d.c.safe_area);
     }
@@ -228,6 +229,12 @@ pub const Div = struct {
     }
     pub fn scale(d: Div, v: f32) Div {
         return d.set("scale", v);
+    }
+    /// Where `scale` draws from, in fractions of its rect: 0, 0 is its top
+    /// left corner, 0.5, 0.5 (the default) its middle. A box that meets the
+    /// screen's edge scales from that edge, so no gap opens along it.
+    pub fn scaleAnchor(d: Div, x: f32, y: f32) Div {
+        return d.set("scale_anchor", types.Point{ .x = x, .y = y });
     }
     /// Turned in the plane by `v` radians (clockwise).
     pub fn rotate(d: Div, v: f32) Div {
