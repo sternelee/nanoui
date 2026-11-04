@@ -168,7 +168,9 @@ test "field placeholder suggestion and composition retain the selected font" {
         try testing.expectEqualStrings("gitii", s.buf.text());
         try testing.expect(t.ctx.focused_text.?.marked != null);
         const marked = try expectRun(&t, "gitii", style);
-        try expectCaret(&t, marked, "gitii", 4, style);
+        // An empty selection in the marked text is an insertion point: the
+        // caret sits after what was composed, not at its front.
+        try expectCaret(&t, marked, "gitii", 5, style);
         t.textOps(&.{.{ .insert = "W" }});
         try testing.expectEqualStrings("gitW", s.buf.text());
         try testing.expect(t.ctx.focused_text.?.marked == null);

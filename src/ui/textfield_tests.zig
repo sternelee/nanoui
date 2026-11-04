@@ -58,6 +58,32 @@ test "composition, selection, commands" {
     try std.testing.expectEqualStrings("", b.text());
 }
 
+// An input method that passes selectedRange {0, 0} for plain punctuation
+// ("/" with the Chinese IME) must not park the caret before what it just
+// composed: an empty selection is an insertion point, which sits after the
+// marked text, as every editor on the platform shows it.
+test "marked text with an empty selection keeps the caret after it" {
+    var b: TextBuffer = .{};
+    defer b.deinit();
+    var e: EditState = .{};
+    var r: Result = .{};
+    apply(&b, &e, .{ .set_marked = .{ .text = "/", .sel_start = 0, .sel_len = 0 } }, .{}, .{ .write = noClip }, &r);
+    try std.testing.expectEqual(@as(usize, 1), e.caret);
+    try std.testing.expectEqual(@as(usize, 1), e.anchor);
+    apply(&b, &e, .{ .unmark = {} }, .{}, .{ .write = noClip }, &r);
+    try std.testing.expectEqualStrings("/", b.text());
+    try std.testing.expectEqual(@as(usize, 1), e.caret);
+    // Mid-composition updates keep the caret at the end of what exists so far.
+    apply(&b, &e, .{ .set_marked = .{ .text = "に", .sel_start = 0, .sel_len = 0 } }, .{}, .{ .write = noClip }, &r);
+    apply(&b, &e, .{ .set_marked = .{ .text = "にほ", .sel_start = 0, .sel_len = 0 } }, .{}, .{ .write = noClip }, &r);
+    try std.testing.expectEqualStrings("/にほ", b.text());
+    try std.testing.expectEqual(@as(usize, 7), e.caret);
+    // An explicit selection inside the marked text still wins.
+    apply(&b, &e, .{ .set_marked = .{ .text = "にほん", .sel_start = 0, .sel_len = 3 } }, .{}, .{ .write = noClip }, &r);
+    try std.testing.expectEqual(@as(usize, 4), e.caret);
+    try std.testing.expectEqual(@as(usize, 1), e.anchor);
+}
+
 test "a suggestion is taken with → at the end" {
     var b: TextBuffer = .{};
     defer b.deinit();

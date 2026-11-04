@@ -209,8 +209,14 @@ pub fn apply(buffer: *TextBuffer, e: *EditState, op: ctx_mod.TextOp, opts: Optio
             const range = e.marked orelse .{ lo, hi };
             const n = buffer.replace(range[0], range[1], m.text);
             e.marked = if (n == 0) null else .{ range[0], range[0] + n };
-            e.caret = range[0] + @min(m.sel_start + m.sel_len, n);
-            e.anchor = range[0] + @min(m.sel_start, n);
+            // An empty selection is an insertion point, not a place to park
+            // the caret before what was just composed: it goes after the
+            // marked text, as every editor on the platform shows it. IMEs
+            // like the Chinese ones pass selectedRange {0, 0} for plain
+            // punctuation ("/"), which must not snap the caret to the front.
+            const end = range[0] + n;
+            e.caret = if (m.sel_len == 0) end else range[0] + @min(m.sel_start + m.sel_len, n);
+            e.anchor = if (m.sel_len == 0) e.caret else range[0] + @min(m.sel_start, n);
             result.changed = true;
         },
         .unmark => e.marked = null,
