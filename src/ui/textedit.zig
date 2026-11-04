@@ -140,7 +140,11 @@ pub fn caretVisible(c: *Context) bool {
 }
 
 pub fn rehome(c: *Context, buffer: *tf.TextBuffer, id: u64) void {
-    if (buffer.last_id != 0 and buffer.last_id != id and c.focus == buffer.last_id) {
+    // A view can add or remove containers around the field between frames
+    // (a completion menu's rows sit before it), moving its id; the app may
+    // point the focus at the new id before the field draws, so both the old
+    // and the new id count as "this field kept the keyboard".
+    if (buffer.last_id != 0 and buffer.last_id != id and (c.focus == buffer.last_id or c.focus == id)) {
         c.focus = id;
         if (c.edits.fetchRemove(buffer.last_id)) |kv| c.edits.put(c.gpa, id, kv.value) catch {};
     }
