@@ -1,0 +1,17 @@
+.{
+    .name = .noop,
+    .version = "0.1.0",
+    .fingerprint = 0xb56d565b332bfa6,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // This nanoui checkout: `cd apps/noop && zig build` builds against the
+        // framework in the same repository, the way nanobrowser does.
+        .nanoui = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}
