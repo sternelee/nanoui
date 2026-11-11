@@ -29,9 +29,12 @@ pub fn main(init: std.process.Init) !void {
     state.open_h = state.row_h + view.open_extra;
     state.notch = try app.newWindow(.{
         .title = "noop",
-        // Born closed: a capsule over the notch's row, grown by the view
-        // when there is something to show. An open-sized window would eat
-        // the clicks of everything around the notch while saying nothing.
+        // Born closed and closed for good where size is concerned: a
+        // capsule over the notch's row, exactly as wide as what it says.
+        // The open island is the panel window (`openPanel` below), not
+        // this one grown: a resized window is a live resize whose layer
+        // flashes, and a wide window here would eat the clicks of
+        // everything around the notch while saying nothing.
         .width = view.closed,
         .height = state.row_h,
         .x = scr.frame.x + (scr.frame.width - view.closed) / 2,
@@ -44,8 +47,36 @@ pub fn main(init: std.process.Init) !void {
         .skip_taskbar = true,
         .level = .island,
         .transparent = true,
-        .content = .{ .view = .init(&state, view.view) },
+        .content = .{ .view = .init(&state, view.capsule) },
     });
+    // The open island: made the first time it opens, from then on shown
+    // and hidden, never resized.
+    state.panel_opener = openPanel;
     state.start();
     try app.run();
+}
+
+/// The open island's window: the panel's full size, made once, on the
+/// island's first open, and from then on only shown and hidden. It never
+/// changes size — nothing it shows can flash — and while it is up it
+/// covers the capsule window underneath, which holds the exact picture of
+/// it at rest.
+fn openPanel(state: *app_state.State) void {
+    const scr = app_state.islandScreen() orelse return;
+    state.panel = state.app.newWindow(.{
+        .title = "noop island",
+        .width = view.width,
+        .height = state.open_h,
+        .x = scr.frame.x + (scr.frame.width - view.width) / 2,
+        .y = scr.frame.y,
+        .resizable = false,
+        .decorations = false,
+        .kind = .panel,
+        .non_activating = true,
+        .all_spaces = true,
+        .skip_taskbar = true,
+        .level = .island,
+        .transparent = true,
+        .content = .{ .view = .init(state, view.view) },
+    }) catch null;
 }

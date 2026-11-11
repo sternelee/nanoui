@@ -58,6 +58,26 @@ pub const State = struct {
     answering: ?Answer = null,
 
     notch: ?*nanoui.Window = null,
+    /// The open island's window: the panel's full size, made on first open
+    /// (`panel_opener`, set by `main`), from then on only shown and hidden —
+    /// never resized, because a window resized under its layer is a live
+    /// resize whose last drawable flashes at the new bounds. The capsule
+    /// window (`notch`) never changes size either.
+    panel: ?*nanoui.Window = null,
+    panel_opener: ?*const fn (self: *State) void = null,
+    /// Whose hover opens or holds the island: the pointer on the capsule
+    /// window opens the panel; the pointer on the panel keeps it up. The
+    /// capsule's reading goes stale once the panel covers it (no events),
+    /// so `syncPanel` clears it as the panel comes up.
+    hover_capsule: bool = false,
+    hover_panel: bool = false,
+    /// The panel view's say, each frame it draws: springs at rest, nothing
+    /// asking for the island — the panel window can leave the screen.
+    panel_rests: bool = true,
+    /// A panel creation is queued (or underway): a window made mid-frame
+    /// draws its first frame inside ours, so it is made on the next turn
+    /// of the run loop, and only once.
+    panel_making: bool = false,
     settings_win: ?*nanoui.Window = null,
     /// Set by `main`: its settings module owns building that window.
     opener: ?*const fn (self: *State) void = null,
@@ -175,7 +195,62 @@ pub const State = struct {
 
     pub fn refresh(self: *State) void {
         if (self.notch) |w| w.redraw();
+        if (self.panel) |w| w.redraw();
         if (self.settings_win) |w| w.redraw();
+    }
+
+    /// How many items are waiting to be seen.
+    pub fn waiting(self: *State) usize {
+        var n: usize = 0;
+        for (self.items.items) |it| {
+            if (it.state.shown()) n += 1;
+        }
+        return n;
+    }
+
+    /// Whether the island stands open: the pointer on either of its
+    /// windows, a run going, or something waiting to be seen.
+    pub fn islandOpen(self: *State) bool {
+        return self.hover_capsule or self.hover_panel or
+            self.screen == .run or self.runs.items.len > 0 or self.waiting() > 0;
+    }
+
+    /// Shows the panel window once the island opens, hides it once its
+    /// springs rest closed. Both windows hold their size for good; the
+    /// panel is simply placed over the capsule while the island is open,
+    /// and the static capsule below is already the exact picture of the
+    /// panel at rest, so neither direction of the handoff shows anything.
+    fn makePanel(ctx: ?*anyopaque) callconv(.c) void {
+        const self: *State = @ptrCast(@alignCast(ctx orelse return));
+        self.panel_making = false;
+        if (self.panel == null) {
+            if (self.panel_opener) |open| open(self);
+        }
+    }
+
+    pub fn syncPanel(self: *State) void {
+        if (self.islandOpen()) {
+            if (self.panel == null and !self.panel_making) {
+                // Next turn of the run loop, not inside this frame: a
+                // window made here draws its first frame inside ours,
+                // whose view would ask for the panel again before the
+                // field is set.
+                self.panel_making = true;
+                nanoui.App.soon(@ptrCast(self), makePanel);
+            } else if (self.panel != null and !self.panel.?.isVisible()) {
+                self.panel.?.show();
+            }
+            // The panel has the pointer now; the capsule under it sees no
+            // events, and its hover would read stale-open forever.
+            if (self.panel) |p| {
+                if (p.isVisible()) self.hover_capsule = false;
+            }
+        } else if (self.panel_rests) {
+            if (self.panel) |p| {
+                if (p.isVisible()) p.hide();
+                self.hover_panel = false;
+            }
+        }
     }
 
     pub fn save(self: *State) void {

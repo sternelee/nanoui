@@ -27,47 +27,39 @@ const amber: ui.Color = .hex(0xfbbf24);
 const violet: ui.Color = .hex(0xa78bfa);
 
 pub fn view(self: *app_state.State, c: *ui.Context) void {
-    // One spring grows the island INSIDE its window: the window is placed,
-    // not animated — it jumps to the panel the moment the island opens and
-    // drops back to the capsule only once the springs rest. A window resized
-    // every animation frame is a live resize the whole animation through:
-    // the layer's last drawable never catches up, and the strip it doesn't
-    // cover lifts the island off the screen's top edge frame after frame.
-    // A window that holds still while its content springs has nothing to
-    // catch up with.
+    // The open island's window never changes size: the springs grow the
+    // island inside its fixed canvas. A window resized while its layer
+    // presents is a live resize the whole animation through — the layer's
+    // last drawable is older than its bounds, and the strip it doesn't
+    // cover flashes. So the panel is its own window, shown and hidden,
+    // never resized; the capsule under it is another, and at rest the two
+    // draw the same pixels in the same place.
     const f = ui.motion.frame(c, .{
         .target = .{ .width = closed },
         .hover = .{ .width = width },
         .transition = .{ .spring = ui.motion.Spring.visual(0.22, 0) },
     });
     const iw = f.width orelse closed;
-    const isle = ui.div(c).absolute().w(iw).row().itemsCenter().clip().control().motion(f)
+    const isle = ui.div(c).absolute().offset((c.size.w - iw) / 2, 0).w(iw).row().itemsCenter().clip().control().motion(f)
         .scaleAnchor(0.5, 0);
     defer isle.end();
     // Open: the pointer is on it, something is waiting, or a run is going.
-    const asked = self.screen == .run or self.runs.items.len > 0 or work(self) > 0;
-    const open = isle.hovered() or asked;
+    self.hover_panel = isle.hovered();
+    const open = self.islandOpen();
     const ih = ui.motion.number(c, "h", if (open) self.open_h else self.row_h, .{
         .spring = ui.motion.Spring.visual(0.22, 0),
     });
     _ = isle.h(ih);
-    // Resting (near enough: springs settle asymptotically): both springs
-    // at one of their ends.
+    // Resting (near enough: springs settle asymptotically) and closed:
+    // the moment the panel window can leave the screen.
     const settled = (@abs(iw - closed) < 0.5 or @abs(iw - width) < 0.5) and
         (@abs(ih - self.row_h) < 0.5 or @abs(ih - self.open_h) < 0.5);
-    const hold = open or !settled;
-    // The capsule centers itself in the window, wherever the springs have
-    // got it to this frame.
-    _ = isle.offset((c.size.w - iw) / 2, 0);
+    self.panel_rests = !open and settled;
     // The notch is cut from the screen's top edge: square along it, rounded
     // only underneath (a square piece over a same-colored capsule).
     const r: f32 = 16;
     ui.div(c).absolute().offset(0, 0).wFull().h(ih - r).bg(dark).end();
     ui.div(c).absolute().offset(0, ih - 2 * r).wFull().h(2 * r).roundedFull().bg(dark).end();
-
-    // The window holds the panel open (or the capsule closed), never
-    // anything between: it sizes once per state change.
-    fitWindow(self, c.size.w, hold);
 
     const body = ui.div(c).column().px(14).pt(8).pb(10).gap(8).sizeFull();
     defer body.end();
@@ -75,32 +67,39 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     if (ih > self.row_h + 8) {
         if (self.screen == .run) run(self, c) else list(self, c);
     }
+    // Last, having drawn this frame: whether the panel window should be
+    // on screen at all.
+    self.syncPanel();
 }
 
-/// Sizes the island's window to what the island holds: the whole panel
-/// while it is open or anything is still moving, the capsule once all of
-/// it rests closed — one placement per state change, never a resize per
-/// animation frame. The window is centered on the canvas the capsule drew
-/// in this frame, so the capsule lands over the notch whether that canvas
-/// has caught up with the window yet or not.
-fn fitWindow(self: *app_state.State, canvas_w: f32, hold: bool) void {
-    const win = self.notch orelse return;
-    const scr = (app_state.islandScreen() orelse return);
-    const want_w: f64 = if (hold) width else closed;
-    const want_h: f64 = if (hold) self.open_h else self.row_h;
-    const x = scr.frame.x + (scr.frame.width - @as(f64, canvas_w)) / 2;
-    const y = scr.frame.y;
-    const have = win.frame();
-    if (have.x == x and have.y == y and have.width == want_w and have.height == want_h) return;
-    win.place(x, y, want_w, want_h);
+/// The closed capsule's own window: the notch's row, nothing more. It
+/// never changes size, so it never shows a drawable of the wrong shape,
+/// and being exactly the capsule, nothing around the notch loses its
+/// clicks. Its hover is what opens the panel; the panel's is what keeps
+/// it open, and at rest the two draw the same pixels in the same place,
+/// so the handoff in either direction is nothing to see.
+pub fn capsule(self: *app_state.State, c: *ui.Context) void {
+    const root = ui.div(c).absolute().wFull().hFull().row().itemsCenter().clip().control();
+    defer root.end();
+    self.hover_capsule = root.hovered();
+    // The same top edge the panel draws: square along the screen's top,
+    // rounded only underneath.
+    const r: f32 = 16;
+    ui.div(c).absolute().offset(0, 0).wFull().h(self.row_h - r).bg(dark).end();
+    ui.div(c).absolute().offset(0, self.row_h - 2 * r).wFull().h(2 * r).roundedFull().bg(dark).end();
+    const pad = ui.div(c).column().px(14).pt(8).sizeFull();
+    defer pad.end();
+    header(self, c, false);
+    self.syncPanel();
 }
+
 
 /// The line across the notch: what wants attention, and what is going on.
 fn header(self: *app_state.State, c: *ui.Context, open: bool) void {
     const line = ui.div(c).row().itemsCenter().gap(8).wFull().h(18);
     defer line.end();
     const shown = if (self.screen == .run) self.shownItem() else top(self);
-    const n = work(self);
+    const n = self.waiting();
     if (shown) |it| {
         ui.icon(c, it.kind.symbol(), .{ .size = 12, .color = color(it.state) });
         ui.text(c, it.title, .{
