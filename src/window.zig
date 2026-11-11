@@ -558,11 +558,20 @@ fn yes(_: objc.Object, _: objc.SEL) callconv(.c) bool {
     return true;
 }
 
+/// A borderless window is placed on purpose (an island under the notch, a
+/// tray panel): AppKit's own constraining pulls such a window off the
+/// screen's top edge — below the camera housing — once it grows tall enough
+/// to cover the notch. The frame it is given is the frame it keeps.
+fn keepFrame(_: objc.Object, _: objc.SEL, frame: objc.CGRect, _: objc.Object) callconv(.c) objc.CGRect {
+    return frame;
+}
+
 /// A borderless NSWindow can't become key or main unless its class says
 /// so, and then it would take no keys.
 const borderless_methods = [_]objc.Method{
     .{ .name = "canBecomeKeyWindow", .imp = &yes, .types = "B@:" },
     .{ .name = "canBecomeMainWindow", .imp = &yes, .types = "B@:" },
+    .{ .name = "constrainFrameRect:toScreen:", .imp = &keepFrame, .types = "{CGRect={CGPoint=dd}{CGSize=dd}}@:{CGRect={CGPoint=dd}{CGSize=dd}}@" },
 };
 
 extern "c" fn CACurrentMediaTime() f64;
