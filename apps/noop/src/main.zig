@@ -29,9 +29,12 @@ pub fn main(init: std.process.Init) !void {
     state.open_h = state.row_h + view.open_extra;
     state.notch = try app.newWindow(.{
         .title = "noop",
-        .width = view.width,
-        .height = state.open_h,
-        .x = (scr.frame.width - view.width) / 2,
+        // Born closed: a capsule over the notch's row, grown by the view
+        // when there is something to show. An open-sized window would eat
+        // the clicks of everything around the notch while saying nothing.
+        .width = view.closed,
+        .height = state.row_h,
+        .x = (scr.frame.width - view.closed) / 2,
         .y = 0,
         .resizable = false,
         .decorations = false,

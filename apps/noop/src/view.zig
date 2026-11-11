@@ -48,12 +48,34 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     ui.div(c).absolute().offset(0, 0).wFull().h(ih - r).bg(dark).end();
     ui.div(c).absolute().offset(0, ih - 2 * r).wFull().h(2 * r).roundedFull().bg(dark).end();
 
+    // The window follows the island: closed, it is only the capsule over the
+    // notch's row, so what is around it keeps its clicks and its focus;
+    // opening grows it under the pointer. The window waits for the closing
+    // spring to settle before it shrinks, or the animation is cut short.
+    fitWindow(self, c, open, ih);
+
     const body = ui.div(c).column().px(14).pt(8).pb(10).gap(8).sizeFull();
     defer body.end();
     header(self, c, ih > self.row_h + 8);
     if (ih > self.row_h + 8) {
         if (self.screen == .run) run(self, c) else list(self, c);
     }
+}
+
+/// Sizes the island's window to what the island shows, centered over the
+/// notch. Only the drawn island is interactive; a transparent window is not.
+fn fitWindow(self: *app_state.State, c: *ui.Context, open: bool, ih: f32) void {
+    _ = c;
+    const win = self.notch orelse return;
+    const settled = ih <= self.row_h + 1;
+    const want_w: f64 = if (open) width else closed;
+    const want_h: f64 = if (open) self.open_h else self.row_h;
+    const have = win.contentSize();
+    if (have[0] == want_w and have[1] == want_h) return;
+    if (!open and !settled) return;
+    win.setSize(want_w, want_h);
+    const scr = nanoui.screens.mainScreen() orelse return;
+    win.setPosition((scr.frame.width - want_w) / 2, 0);
 }
 
 /// The line across the notch: what wants attention, and what is going on.

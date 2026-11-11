@@ -66,7 +66,10 @@ pub fn loadSettings(gpa: std.mem.Allocator, store: nanoui.kv.Store) types.Settin
 fn decodeSettings(gpa: std.mem.Allocator, text: []const u8) !types.Settings {
     var s: types.Settings = .{};
     errdefer s.free(gpa);
-    const wire = try std.json.parseFromSliceLeaky(WireSettings, gpa, text, .{
+    // The parse owns its scratch: everything kept is duped into the settings.
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const wire = try std.json.parseFromSliceLeaky(WireSettings, arena.allocator(), text, .{
         .ignore_unknown_fields = true,
     });
     s.every = @max(30, wire.every);
