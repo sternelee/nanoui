@@ -261,6 +261,18 @@ pub const Window = struct {
         objc.msg(void, self.nswindow, "setFrameTopLeftPoint:", .{objc.CGPoint{ .x = x, .y = primaryHeight() - y }});
     }
 
+    /// Places the content's top left at `x`, `y` and sizes it to `width` ×
+    /// `height` in one move. Sizing and then placing is two window-server
+    /// round trips, between which a resizing window (an island riding its
+    /// springs) shows a frame from in between; one `setFrame` is atomic.
+    pub fn place(self: *Window, x: f64, y: f64, width: f64, height: f64) void {
+        const want = objc.msg(objc.CGRect, self.nswindow, "frameRectForContentRect:", .{objc.CGRect{
+            .origin = .{ .x = x, .y = primaryHeight() - y - height },
+            .size = .{ .width = width, .height = height },
+        }});
+        objc.msg(void, self.nswindow, "setFrame:display:animate:", .{ want, objc.YES, objc.NO });
+    }
+
     pub fn center(self: *Window) void {
         objc.msg(void, self.nswindow, "center", .{});
     }

@@ -27,11 +27,14 @@ const amber: ui.Color = .hex(0xfbbf24);
 const violet: ui.Color = .hex(0xa78bfa);
 
 pub fn view(self: *app_state.State, c: *ui.Context) void {
-    // One spring grows the island and its window together, from the
-    // notch's width to the panel: the capsule stays put under the pointer
-    // (it is the window that grows outward around it, not the capsule
-    // sliding inside a window that jumped ahead), and the window is never
-    // bigger than the capsule it is drawing this frame.
+    // One spring grows the island INSIDE its window: the window is placed,
+    // not animated — it jumps to the panel the moment the island opens and
+    // drops back to the capsule only once the springs rest. A window resized
+    // every animation frame is a live resize the whole animation through:
+    // the layer's last drawable never catches up, and the strip it doesn't
+    // cover lifts the island off the screen's top edge frame after frame.
+    // A window that holds still while its content springs has nothing to
+    // catch up with.
     const f = ui.motion.frame(c, .{
         .target = .{ .width = closed },
         .hover = .{ .width = width },
@@ -48,14 +51,23 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
         .spring = ui.motion.Spring.visual(0.22, 0),
     });
     _ = isle.h(ih);
+    // Resting (near enough: springs settle asymptotically): both springs
+    // at one of their ends.
+    const settled = (@abs(iw - closed) < 0.5 or @abs(iw - width) < 0.5) and
+        (@abs(ih - self.row_h) < 0.5 or @abs(ih - self.open_h) < 0.5);
+    const hold = open or !settled;
+    // The capsule centers itself in the window, wherever the springs have
+    // got it to this frame.
+    _ = isle.offset((c.size.w - iw) / 2, 0);
     // The notch is cut from the screen's top edge: square along it, rounded
     // only underneath (a square piece over a same-colored capsule).
     const r: f32 = 16;
     ui.div(c).absolute().offset(0, 0).wFull().h(ih - r).bg(dark).end();
     ui.div(c).absolute().offset(0, ih - 2 * r).wFull().h(2 * r).roundedFull().bg(dark).end();
 
-    // The window rides the island this frame, centered over the notch.
-    fitWindow(self, iw, ih);
+    // The window holds the panel open (or the capsule closed), never
+    // anything between: it sizes once per state change.
+    fitWindow(self, c.size.w, hold);
 
     const body = ui.div(c).column().px(14).pt(8).pb(10).gap(8).sizeFull();
     defer body.end();
@@ -65,22 +77,22 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     }
 }
 
-/// Sizes the island's window to what the island's springs draw this frame,
-/// centered on the notched screen. Closed, it is only the capsule over the
-/// notch's row, so what is around it keeps its clicks and its focus;
-/// opening, it grows outward with the capsule rather than ahead of it, and
-/// it never clips the closing capsule, because it never leaves the
-/// capsule's bounds. Only the drawn island is interactive territory; a
-/// transparent window is not.
-fn fitWindow(self: *app_state.State, iw: f32, ih: f32) void {
+/// Sizes the island's window to what the island holds: the whole panel
+/// while it is open or anything is still moving, the capsule once all of
+/// it rests closed — one placement per state change, never a resize per
+/// animation frame. The window is centered on the canvas the capsule drew
+/// in this frame, so the capsule lands over the notch whether that canvas
+/// has caught up with the window yet or not.
+fn fitWindow(self: *app_state.State, canvas_w: f32, hold: bool) void {
     const win = self.notch orelse return;
-    const want_w: f64 = @floatCast(@max(closed, iw));
-    const want_h: f64 = @floatCast(@max(self.row_h, ih));
-    const have = win.contentSize();
-    if (have[0] == want_w and have[1] == want_h) return;
     const scr = (app_state.islandScreen() orelse return);
-    win.setSize(want_w, want_h);
-    win.setPosition(scr.frame.x + (scr.frame.width - want_w) / 2, scr.frame.y);
+    const want_w: f64 = if (hold) width else closed;
+    const want_h: f64 = if (hold) self.open_h else self.row_h;
+    const x = scr.frame.x + (scr.frame.width - @as(f64, canvas_w)) / 2;
+    const y = scr.frame.y;
+    const have = win.frame();
+    if (have.x == x and have.y == y and have.width == want_w and have.height == want_h) return;
+    win.place(x, y, want_w, want_h);
 }
 
 /// The line across the notch: what wants attention, and what is going on.
