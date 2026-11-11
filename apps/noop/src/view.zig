@@ -27,12 +27,18 @@ const amber: ui.Color = .hex(0xfbbf24);
 const violet: ui.Color = .hex(0xa78bfa);
 
 pub fn view(self: *app_state.State, c: *ui.Context) void {
+    // One spring grows the island and its window together, from the
+    // notch's width to the panel: the capsule stays put under the pointer
+    // (it is the window that grows outward around it, not the capsule
+    // sliding inside a window that jumped ahead), and the window is never
+    // bigger than the capsule it is drawing this frame.
     const f = ui.motion.frame(c, .{
-        .target = .{ .x = (c.size.w - closed) / 2, .width = closed },
-        .hover = .{ .x = 0, .width = c.size.w },
+        .target = .{ .width = closed },
+        .hover = .{ .width = width },
         .transition = .{ .spring = ui.motion.Spring.visual(0.22, 0) },
     });
-    const isle = ui.div(c).absolute().w(closed).row().itemsCenter().clip().control().motion(f)
+    const iw = f.width orelse closed;
+    const isle = ui.div(c).absolute().w(iw).row().itemsCenter().clip().control().motion(f)
         .scaleAnchor(0.5, 0);
     defer isle.end();
     // Open: the pointer is on it, something is waiting, or a run is going.
@@ -48,11 +54,8 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     ui.div(c).absolute().offset(0, 0).wFull().h(ih - r).bg(dark).end();
     ui.div(c).absolute().offset(0, ih - 2 * r).wFull().h(2 * r).roundedFull().bg(dark).end();
 
-    // The window follows the island: closed, it is only the capsule over the
-    // notch's row, so what is around it keeps its clicks and its focus;
-    // opening grows it under the pointer. The window waits for the closing
-    // spring to settle before it shrinks, or the animation is cut short.
-    fitWindow(self, c, open, ih);
+    // The window rides the island this frame, centered over the notch.
+    fitWindow(self, iw, ih);
 
     const body = ui.div(c).column().px(14).pt(8).pb(10).gap(8).sizeFull();
     defer body.end();
@@ -62,17 +65,19 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     }
 }
 
-/// Sizes the island's window to what the island shows, centered over the
-/// notch. Only the drawn island is interactive; a transparent window is not.
-fn fitWindow(self: *app_state.State, c: *ui.Context, open: bool, ih: f32) void {
-    _ = c;
+/// Sizes the island's window to what the island's springs draw this frame,
+/// centered over the notch. Closed, it is only the capsule over the notch's
+/// row, so what is around it keeps its clicks and its focus; opening, it
+/// grows outward with the capsule rather than ahead of it, and it never
+/// clips the closing capsule, because it never leaves the capsule's bounds.
+/// Only the drawn island is interactive territory; a transparent window is
+/// not.
+fn fitWindow(self: *app_state.State, iw: f32, ih: f32) void {
     const win = self.notch orelse return;
-    const settled = ih <= self.row_h + 1;
-    const want_w: f64 = if (open) width else closed;
-    const want_h: f64 = if (open) self.open_h else self.row_h;
+    const want_w: f64 = @floatCast(@max(closed, iw));
+    const want_h: f64 = @floatCast(@max(self.row_h, ih));
     const have = win.contentSize();
     if (have[0] == want_w and have[1] == want_h) return;
-    if (!open and !settled) return;
     win.setSize(want_w, want_h);
     const scr = nanoui.screens.mainScreen() orelse return;
     win.setPosition((scr.frame.width - want_w) / 2, 0);
