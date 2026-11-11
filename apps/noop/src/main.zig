@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
         .quit_on_last_window_closed = false,
     });
     defer app.destroy();
-    const scr = nanoui.screens.mainScreen() orelse return error.NoScreen;
+    const scr = app_state.islandScreen() orelse return error.NoScreen;
     var state = app_state.State.init(init.gpa, app);
     defer state.deinit();
     state.opener = settings_view.open;
@@ -34,8 +34,8 @@ pub fn main(init: std.process.Init) !void {
         // the clicks of everything around the notch while saying nothing.
         .width = view.closed,
         .height = state.row_h,
-        .x = (scr.frame.width - view.closed) / 2,
-        .y = 0,
+        .x = scr.frame.x + (scr.frame.width - view.closed) / 2,
+        .y = scr.frame.y,
         .resizable = false,
         .decorations = false,
         .kind = .panel,

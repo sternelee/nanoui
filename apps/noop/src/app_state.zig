@@ -8,6 +8,15 @@ const prompt = @import("prompt.zig");
 const agent = @import("agent.zig");
 const cmd = @import("cmd.zig");
 const store = @import("store.zig");
+
+/// The screen the island lives on: the notched one when there is one, the
+/// primary otherwise — a notch card belongs over the hardware notch, not
+/// wherever the focused window happens to be.
+pub fn islandScreen() ?nanoui.screens.Screen {
+    var buf: [8]nanoui.screens.Screen = undefined;
+    for (nanoui.screens.list(&buf)) |s| if (s.hasNotch()) return s;
+    return nanoui.screens.primary();
+}
 const ingest = @import("ingest.zig");
 const ui = nanoui.ui;
 

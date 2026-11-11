@@ -66,21 +66,21 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
 }
 
 /// Sizes the island's window to what the island's springs draw this frame,
-/// centered over the notch. Closed, it is only the capsule over the notch's
-/// row, so what is around it keeps its clicks and its focus; opening, it
-/// grows outward with the capsule rather than ahead of it, and it never
-/// clips the closing capsule, because it never leaves the capsule's bounds.
-/// Only the drawn island is interactive territory; a transparent window is
-/// not.
+/// centered on the notched screen. Closed, it is only the capsule over the
+/// notch's row, so what is around it keeps its clicks and its focus;
+/// opening, it grows outward with the capsule rather than ahead of it, and
+/// it never clips the closing capsule, because it never leaves the
+/// capsule's bounds. Only the drawn island is interactive territory; a
+/// transparent window is not.
 fn fitWindow(self: *app_state.State, iw: f32, ih: f32) void {
     const win = self.notch orelse return;
     const want_w: f64 = @floatCast(@max(closed, iw));
     const want_h: f64 = @floatCast(@max(self.row_h, ih));
     const have = win.contentSize();
     if (have[0] == want_w and have[1] == want_h) return;
+    const scr = (app_state.islandScreen() orelse return);
     win.setSize(want_w, want_h);
-    const scr = nanoui.screens.mainScreen() orelse return;
-    win.setPosition((scr.frame.width - want_w) / 2, 0);
+    win.setPosition(scr.frame.x + (scr.frame.width - want_w) / 2, scr.frame.y);
 }
 
 /// The line across the notch: what wants attention, and what is going on.
