@@ -48,7 +48,7 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
         .target = .{ .width = closed, .height = if (open) self.open_h else self.row_h },
         .hover = .{ .width = width },
         .initial = .{ .width = closed, .height = self.row_h },
-        .transition = .{ .spring = ui.motion.Spring.visual(0.3, 0) },
+        .transition = .{ .spring = ui.motion.Spring.visual(0.3, 0.22) },
     });
     const iw = f.width orelse closed;
     const ih = f.height orelse self.row_h;
