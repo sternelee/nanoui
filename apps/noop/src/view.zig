@@ -26,6 +26,10 @@ const red: ui.Color = .hex(0xf87171);
 const amber: ui.Color = .hex(0xfbbf24);
 const violet: ui.Color = .hex(0xa78bfa);
 
+/// The corner radius of the island's shape: the notch's own, so the
+/// island reads as extruded from the screen rather than laid on it.
+const shape_r: f32 = 16;
+
 pub fn view(self: *app_state.State, c: *ui.Context) void {
     // The open island's window never changes size: the springs grow the
     // island inside its fixed canvas. A window resized while its layer
@@ -34,33 +38,36 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     // cover flashes. So the panel is its own window, shown and hidden,
     // never resized; the capsule under it is another, and at rest the two
     // draw the same pixels in the same place.
+    const open = self.islandOpen();
+    // One frame for both of the island's sizes. `initial` is what a fresh
+    // motion state starts from — the panel's first frame must be exactly
+    // the capsule the capsule window is already drawing, or the handoff
+    // itself is the flash. Width is the pointer's (hover), height is the
+    // island's state (hover, a run, or something waiting).
     const f = ui.motion.frame(c, .{
-        .target = .{ .width = closed },
+        .target = .{ .width = closed, .height = if (open) self.open_h else self.row_h },
         .hover = .{ .width = width },
-        .transition = .{ .spring = ui.motion.Spring.visual(0.22, 0) },
+        .initial = .{ .width = closed, .height = self.row_h },
+        .transition = .{ .spring = ui.motion.Spring.visual(0.3, 0) },
     });
     const iw = f.width orelse closed;
-    const isle = ui.div(c).absolute().offset((c.size.w - iw) / 2, 0).w(iw).row().itemsCenter().clip().control().motion(f)
-        .scaleAnchor(0.5, 0);
+    const ih = f.height orelse self.row_h;
+    // The island's shape is its own background: one rounded rectangle, the
+    // top corners' arcs leaving the screen's top edge as a smooth curve
+    // where the menu bar shows through, the bottom's as the capsule's.
+    // Drawn as a child would double the corners.
+    const isle = ui.div(c).absolute().offset((c.size.w - iw) / 2, 0).row().itemsCenter().clip().control().motion(f)
+        .scaleAnchor(0.5, 0)
+        .rounded(shape_r)
+        .bg(dark);
     defer isle.end();
     // Open: the pointer is on it, something is waiting, or a run is going.
     self.hover_panel = isle.hovered();
-    const open = self.islandOpen();
-    const ih = ui.motion.number(c, "h", if (open) self.open_h else self.row_h, .{
-        .spring = ui.motion.Spring.visual(0.22, 0),
-    });
-    _ = isle.h(ih);
     // Resting (near enough: springs settle asymptotically) and closed:
     // the moment the panel window can leave the screen.
     const settled = (@abs(iw - closed) < 0.5 or @abs(iw - width) < 0.5) and
         (@abs(ih - self.row_h) < 0.5 or @abs(ih - self.open_h) < 0.5);
     self.panel_rests = !open and settled;
-    // The notch is cut from the screen's top edge: square along it, rounded
-    // only underneath (a square piece over a same-colored capsule).
-    const r: f32 = 16;
-    ui.div(c).absolute().offset(0, 0).wFull().h(ih - r).bg(dark).end();
-    ui.div(c).absolute().offset(0, ih - 2 * r).wFull().h(2 * r).roundedFull().bg(dark).end();
-
     const body = ui.div(c).column().px(14).pt(8).pb(10).gap(8).sizeFull();
     defer body.end();
     header(self, c, ih > self.row_h + 8);
@@ -79,20 +86,17 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
 /// it open, and at rest the two draw the same pixels in the same place,
 /// so the handoff in either direction is nothing to see.
 pub fn capsule(self: *app_state.State, c: *ui.Context) void {
-    const root = ui.div(c).absolute().wFull().hFull().row().itemsCenter().clip().control();
+    // The same shape the panel draws at rest, pixel for pixel: one rounded
+    // rectangle, the top corners leaving a smooth curve where the island
+    // meets the screen's top edge.
+    const root = ui.div(c).absolute().wFull().hFull().row().itemsCenter().clip().control().rounded(shape_r).bg(dark);
     defer root.end();
     self.hover_capsule = root.hovered();
-    // The same top edge the panel draws: square along the screen's top,
-    // rounded only underneath.
-    const r: f32 = 16;
-    ui.div(c).absolute().offset(0, 0).wFull().h(self.row_h - r).bg(dark).end();
-    ui.div(c).absolute().offset(0, self.row_h - 2 * r).wFull().h(2 * r).roundedFull().bg(dark).end();
     const pad = ui.div(c).column().px(14).pt(8).sizeFull();
     defer pad.end();
     header(self, c, false);
     self.syncPanel();
 }
-
 
 /// The line across the notch: what wants attention, and what is going on.
 fn header(self: *app_state.State, c: *ui.Context, open: bool) void {
