@@ -52,15 +52,31 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     });
     const iw = f.width orelse closed;
     const ih = f.height orelse self.row_h;
-    // The island's shape is its own background: one rounded rectangle, the
-    // top corners' arcs leaving the screen's top edge as a smooth curve
-    // where the menu bar shows through, the bottom's as the capsule's.
-    // Drawn as a child would double the corners.
+    // The island's body: one rounded rectangle. Its top corners sit where
+    // the fillet wings (below) pour into it, so their rounding is what
+    // the wings cover; the bottom's is the capsule's.
     const isle = ui.div(c).absolute().offset((c.size.w - iw) / 2, 0).row().itemsCenter().clip().control().motion(f)
         .scaleAnchor(0.5, 0)
         .rounded(shape_r)
         .bg(dark);
     defer isle.end();
+    // The fillet wings: where the island's sides melt into the screen's
+    // top edge — the notch growing, not a card floating under it. Each
+    // wing is a square of `shape_r` beside the body, dark, clipped to a
+    // quarter disc whose center is the body's top corner: thick along the
+    // top edge, thinning as it curves down into the body's side. The
+    // disc's radius is the wing's corner radius set on the corner
+    // diagonal to its center, so the arc's center lands on the body.
+    // They ride the spring's `iw`, so the flare opens and closes with the
+    // island.
+    if (iw > closed + 1) {
+        const ix = (c.size.w - iw) / 2;
+        const wing = shape_r;
+        const left = ui.div(c).absolute().offset(ix - wing, 0).w(wing).h(wing).bg(dark).clip().clipCorners(8);
+        left.end();
+        const right = ui.div(c).absolute().offset(ix + iw, 0).w(wing).h(wing).bg(dark).clip().clipCorners(4);
+        right.end();
+    }
     // Open: the pointer is on it, something is waiting, or a run is going.
     self.hover_panel = isle.hovered();
     // Resting (near enough: springs settle asymptotically) and closed:
