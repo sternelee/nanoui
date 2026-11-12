@@ -199,13 +199,6 @@ pub const Div = struct {
     pub fn clip(d: Div) Div {
         return d.set("clip", true);
     }
-    /// Which corners `clip` rounds when it clips: 1 top left, 2 top right,
-    /// 4 bottom right, 8 bottom left. A wing with `clipCorners(4)` and its
-    /// own corner radius is a concave fillet — the dark the notch's sides
-    /// melt into the menu bar with.
-    pub fn clipCorners(d: Div, mask: u4) Div {
-        return d.set("clip_corners", mask);
-    }
     pub fn scrollY(d: Div) Div {
         return d.set("scroll", true);
     }
