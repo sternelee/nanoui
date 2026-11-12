@@ -52,43 +52,60 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     });
     const iw = f.width orelse closed;
     const ih = f.height orelse self.row_h;
-    // The island's body: one rounded rectangle. Its top corners sit where
-    // the fillet wings (below) pour into it, so their rounding is what
-    // the wings cover; the bottom's is the capsule's.
-    const isle = ui.div(c).absolute().offset((c.size.w - iw) / 2, 0).row().itemsCenter().clip().control().motion(f)
+    const ix = (c.size.w - iw) / 2;
+    // The silhouette's top edge runs square, true to the screen's edge —
+    // dark covers over where the body's own top corners would round away.
+    // Siblings of the body, drawn under it: children would be clipped by
+    // the body's rounded clip, and drawn after, they would sit on the
+    // content's face. They take the pointer (`hovered` marks a box
+    // interactive), or the island would close whenever it rests on one of
+    // these corners.
+    const cover_l = ui.div(c).absolute().offset(ix, 0).w(shape_r).h(shape_r).bg(dark);
+    cover_l.end();
+    const cover_r = ui.div(c).absolute().offset(ix + iw - shape_r, 0).w(shape_r).h(shape_r).bg(dark);
+    cover_r.end();
+    // The body: a rounded rectangle, its top corners hidden by the covers,
+    // its bottom's the capsule's.
+    const isle = ui.div(c).absolute().offset(ix, 0).row().itemsCenter().clip().control().motion(f)
         .scaleAnchor(0.5, 0)
         .rounded(shape_r)
         .bg(dark);
-    defer isle.end();
-    // The fillet wings: where the island's sides melt into the screen's
-    // top edge — the notch growing, not a card floating under it. Each
-    // wing is a square of `shape_r` beside the body, dark, clipped to a
-    // quarter disc whose center is the body's top corner: thick along the
-    // top edge, thinning as it curves down into the body's side. The
-    // disc's radius is the wing's corner radius set on the corner
-    // diagonal to its center, so the arc's center lands on the body.
-    // They ride the spring's `iw`, so the flare opens and closes with the
-    // island.
-    if (iw > closed + 1) {
-        const ix = (c.size.w - iw) / 2;
-        const wing = shape_r;
-        const left = ui.div(c).absolute().offset(ix - wing, 0).w(wing).h(wing).bg(dark).clip().clipCorners(8);
-        left.end();
-        const right = ui.div(c).absolute().offset(ix + iw, 0).w(wing).h(wing).bg(dark).clip().clipCorners(4);
-        right.end();
+    {
+        const body = ui.div(c).column().px(14).pt(8).pb(10).gap(8).sizeFull();
+        defer body.end();
+        header(self, c, ih > self.row_h + 8);
+        if (ih > self.row_h + 8) {
+            if (self.screen == .run) run(self, c) else list(self, c);
+        }
     }
-    // Open: the pointer is on it, something is waiting, or a run is going.
-    self.hover_panel = isle.hovered();
+    isle.end();
+    // Open: the pointer is on the body, or on one of its top corners.
+    self.hover_panel = isle.hovered() or cover_l.hovered() or cover_r.hovered();
     // Resting (near enough: springs settle asymptotically) and closed:
     // the moment the panel window can leave the screen.
     const settled = (@abs(iw - closed) < 0.5 or @abs(iw - width) < 0.5) and
         (@abs(ih - self.row_h) < 0.5 or @abs(ih - self.open_h) < 0.5);
     self.panel_rests = !open and settled;
-    const body = ui.div(c).column().px(14).pt(8).pb(10).gap(8).sizeFull();
-    defer body.end();
-    header(self, c, ih > self.row_h + 8);
-    if (ih > self.row_h + 8) {
-        if (self.screen == .run) run(self, c) else list(self, c);
+    // The fillet wings: where the island's sides melt into the screen's
+    // top edge — the notch grown, not a card floating under it. Each wing
+    // is a square of `shape_r` beside the body at the top edge, clipped to
+    // a quarter disc centered on its inner top corner: full against the
+    // body's side, thinning along a concave arc to nothing at the far end.
+    // The disc comes from rounding the corner diagonal to that center, so
+    // the arc's center lands on the body's top corner. The box carries
+    // only the clip — its own paint would not be clipped (roundClip takes
+    // a box's children, not its face) — and a child fills it dark, so what
+    // shows is the disc alone. Siblings again: outside the body, a child
+    // would be clipped away. They ride the spring's `iw`, so the droplet
+    // opens and closes with the island.
+    if (iw > closed + 1) {
+        const wing = shape_r;
+        const left = ui.div(c).absolute().offset(ix - wing, 0).w(wing).h(wing).clip().clipCorners(8).rounded(wing);
+        ui.div(c).wFull().hFull().bg(dark).end();
+        left.end();
+        const right = ui.div(c).absolute().offset(ix + iw, 0).w(wing).h(wing).clip().clipCorners(4).rounded(wing);
+        ui.div(c).wFull().hFull().bg(dark).end();
+        right.end();
     }
     // Last, having drawn this frame: whether the panel window should be
     // on screen at all.
@@ -102,9 +119,10 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
 /// it open, and at rest the two draw the same pixels in the same place,
 /// so the handoff in either direction is nothing to see.
 pub fn capsule(self: *app_state.State, c: *ui.Context) void {
-    // The same shape the panel draws at rest, pixel for pixel: one rounded
-    // rectangle, the top corners leaving a smooth curve where the island
-    // meets the screen's top edge.
+    // The same shape the panel draws at rest, pixel for pixel: the top
+    // edge square (covers, under the body), the bottom corners rounded.
+    ui.div(c).absolute().offset(0, 0).w(shape_r).h(shape_r).bg(dark).end();
+    ui.div(c).absolute().offset(c.size.w - shape_r, 0).w(shape_r).h(shape_r).bg(dark).end();
     const root = ui.div(c).absolute().wFull().hFull().row().itemsCenter().clip().control().rounded(shape_r).bg(dark);
     defer root.end();
     self.hover_capsule = root.hovered();
