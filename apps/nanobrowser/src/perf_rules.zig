@@ -3,6 +3,9 @@
 const std = @import("std");
 const dom = @import("dom.zig");
 const box = @import("layout/box.zig");
+const style = @import("css/style.zig");
+const vars = @import("css/vars.zig");
+const rule_index = @import("css/rule_index.zig");
 const Rect = box.Rect;
 
 /// Theorem 1 (`NanoUI.BrowserPerf.isHoverHeld`):
@@ -77,10 +80,11 @@ pub fn isResourceTag(tag: []const u8) bool {
 /// Theorem 52 (`NanoUI.Speedometer3Climb.subtree_has_id_and_insertion_work_propagation_sound`):
 /// Whether an element tag requires post-insertion work in `mutate.inserted` (`script`, `iframe`, `link`, or custom element).
 pub fn isInsertionWorkTag(tag: []const u8) bool {
+    if (std.mem.indexOfScalar(u8, tag, '-') != null) return true;
     return switch (tag.len) {
         4 => std.mem.eql(u8, tag, "link"),
         6 => std.mem.eql(u8, tag, "script") or std.mem.eql(u8, tag, "iframe"),
-        else => std.mem.indexOfScalar(u8, tag, '-') != null,
+        else => false,
     };
 }
 
@@ -118,7 +122,7 @@ pub fn attrBit(name: []const u8) u64 {
     return @as(u64, 1) << @intCast(mix & 63);
 }
 
-const svg_pres_attrs = std.StaticStringMap(void).initComptime(.{
+pub const svg_pres_attrs = std.StaticStringMap(void).initComptime(.{
     .{"color"},             .{"fill"},              .{"fill-opacity"},      .{"fill-rule"},
     .{"clip-rule"},         .{"clip-path"},         .{"mask"},              .{"stroke"},
     .{"stroke-width"},      .{"stroke-opacity"},    .{"stroke-linecap"},    .{"stroke-linejoin"},
@@ -127,7 +131,7 @@ const svg_pres_attrs = std.StaticStringMap(void).initComptime(.{
     .{"paint-order"},       .{"vector-effect"},
 });
 
-const html_style_attrs = std.StaticStringMap(void).initComptime(.{
+pub const html_style_attrs = std.StaticStringMap(void).initComptime(.{
     .{"href"},        .{"disabled"},    .{"checked"},     .{"selected"},   .{"readonly"},
     .{"required"},    .{"placeholder"}, .{"open"},        .{"value"},      .{"type"},
     .{"lang"},        .{"dir"},         .{"size"},        .{"face"},       .{"color"},
@@ -168,9 +172,9 @@ pub fn touchUnder(d: *dom.Document, n: *dom.Node) void {
 pub fn touchAttr(d: *dom.Document, n: *dom.Node, name: []const u8) void {
     d.generation +%= 1;
     const is_id = std.mem.eql(u8, name, "id");
-    if (is_id) d.id_generation +%= 1;
     if (isResourceTag(n.tag)) d.scan_dirty = true;
     if (!d.inDocument(n)) return;
+    if (is_id) d.id_generation +%= 1;
     if (std.mem.eql(u8, name, "style")) {
         touchUnder(d, n);
         return;
@@ -186,6 +190,12 @@ pub fn touchAttr(d: *dom.Document, n: *dom.Node, name: []const u8) void {
             return;
         }
     }
+    touchState(d, n);
+}
+
+/// Scoped style invalidation when element state (`:checked`, `:placeholder-shown`) changes on `n`.
+pub fn touchState(d: *dom.Document, n: *dom.Node) void {
+    if (!d.inDocument(n)) return;
     const uses_has = (d.rule_flags & 1) != 0;
     const uses_next = (d.rule_flags & 2) != 0;
     const uses_later = (d.rule_flags & 4) != 0;
@@ -210,22 +220,79 @@ pub inline fn classBit(name: []const u8) u64 {
 /// Self Bloom filter of an element's tag, `id`, and `class` tokens for ancestor selector filtering.
 pub inline fn nodeSelfBloom(n: *const dom.Node) u64 {
     var b: u64 = n.class_filter | attrBit(n.tag);
-    if (n.id_attr) |id| b |= attrBit(id);
+    if (n.id_attr) |id| b |= (attrBit(id) & n.doc.rule_id_bloom);
     return b;
 }
 
-/// Computes `n.ancestor_bloom` from its parent (or walks up to the root if `n == root`).
+const anc_state_attr_mask: u64 = attrBit("disabled") | attrBit("open") | attrBit("inert") |
+    attrBit("lang") | attrBit("dir") | attrBit("readonly") | attrBit("required") |
+    attrBit("checked") | attrBit("selected") | attrBit("type") | attrBit("href");
+
+pub fn nodeSelfHash(n: *const dom.Node) u64 {
+    const doc = n.doc;
+    var h: u64 = std.hash.Wyhash.hash(@intFromEnum(n.ns), n.tag);
+    if (n.class_attr) |ca| h = std.hash.Wyhash.hash(h ^ 0x517CC1B727220A95, ca);
+    if (n.id_attr) |id| {
+        const ref_id = (doc.rule_id_bloom & attrBit(id)) != 0 or (doc.rule_attr_filter & attrBit("id")) != 0 or blk: {
+            if (std.mem.indexOfScalar(u8, doc.url, '#')) |idx| break :blk std.mem.eql(u8, doc.url[idx + 1 ..], id);
+            break :blk false;
+        };
+        if (ref_id) h = std.hash.Wyhash.hash(h ^ 0x94D049BB133111EB, id);
+    }
+    const mask = doc.rule_attr_filter | anc_state_attr_mask;
+    if ((n.attr_filter & mask) != 0) {
+        for (n.attrs.items) |a| {
+            if ((a.name.len == 5 and a.name[0] == 'c' and std.mem.eql(u8, a.name, "class")) or
+                (a.name.len == 2 and a.name[0] == 'i' and std.mem.eql(u8, a.name, "id"))) continue;
+            if ((attrBit(a.name) & mask) == 0) continue;
+            h = std.hash.Wyhash.hash(std.hash.Wyhash.hash(h ^ 0xBF58476D1CE4E5B9, a.name), a.value);
+        }
+    }
+    var flags: u64 = @intFromBool(doc.hover == n);
+    flags |= @as(u64, @intFromBool(doc.active == n)) << 1;
+    flags |= @as(u64, @intFromBool(doc.focus == n)) << 2;
+    if (doc.focus) |f| flags |= @as(u64, @intFromBool(n.contains(f))) << 3;
+    if (n.checked) |ck| flags |= (@as(u64, 1) + @intFromBool(ck)) << 4;
+    if (n.selected) |sl| flags |= (@as(u64, 1) + @intFromBool(sl)) << 6;
+    flags |= @as(u64, @intFromBool(n.modal)) << 8;
+    flags |= @as(u64, @intFromBool(n.popover_open)) << 9;
+    flags |= @as(u64, @intFromBool(n.value != null)) << 10;
+    return h ^ (flags *% 0xD6E8FEB86659FD93);
+}
+
+/// Computes `n.ancestor_bloom` and `n.ancestor_hash` from its parent (or walks up to the root if `n == root`).
 pub inline fn updateAncestorBloom(n: *dom.Node, root: *const dom.Node) void {
+    if (n.parent) |p| if (p.is_shadow) {
+        n.ancestor_bloom = 0;
+        n.ancestor_hash = 0;
+        return;
+    };
     if (n != root) if (n.parent) |p| if (p.kind == .element) {
-        n.ancestor_bloom = p.ancestor_bloom | (if (p.is_shadow) 0 else nodeSelfBloom(p));
+        n.ancestor_bloom = p.ancestor_bloom | nodeSelfBloom(p);
+        n.ancestor_hash = (p.ancestor_hash *% 0x9E3779B97F4A7C15) ^ nodeSelfHash(p);
         return;
     };
     var b: u64 = 0;
+    var chain: [64]*const dom.Node = undefined;
+    var len: usize = 0;
     var at = n.parent;
     while (at) |x| : (at = x.parent) {
-        if (x.kind == .element and !x.is_shadow) b |= nodeSelfBloom(x);
+        if (x.is_shadow) break;
+        if (x.kind == .element) {
+            b |= nodeSelfBloom(x);
+            if (len < chain.len) {
+                chain[len] = x;
+                len += 1;
+            }
+        }
+    }
+    var h: u64 = 0;
+    while (len > 0) {
+        len -= 1;
+        h = (h *% 0x9E3779B97F4A7C15) ^ nodeSelfHash(chain[len]);
     }
     n.ancestor_bloom = b;
+    n.ancestor_hash = h;
 }
 
 /// Synchronizes `attr_filter`, `id_attr`, `class_attr`, `class_filter`, and `class_single` on `dom.Node`.
@@ -268,6 +335,7 @@ pub fn syncNodeAttr(n: *dom.Node, name: []const u8, val: ?[]const u8) void {
             n.class_src_len = 0;
         }
     }
+    @import("dom_flags.zig").propagateSelfAttrs(n);
 }
 
 /// O(1) Bloom-filtered and single-class fast-pathed `Node.hasClass` (Theorem 35).
@@ -314,6 +382,11 @@ pub fn getElementById(d: *const dom.Document, id: []const u8) ?*dom.Node {
     self.id_last_node = found;
     return found;
 }
+
+const style_share = @import("css/style_share.zig");
+pub const ShareCand = style_share.ShareCand;
+pub const StyleShareEntry = style_share.StyleShareEntry;
+pub const StyleShareCache = style_share.StyleShareCache;
 
 test "hover hold is quiescent when element under pointer matches old hover" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -376,4 +449,103 @@ test "protoIcHits validates epoch and resource tags and layout-only flush" {
     try std.testing.expect(!isResourceTag("span"));
     try std.testing.expect(!needsLayoutFlush(false, false, true, true, true));
     try std.testing.expect(needsLayoutFlush(false, true, true, true, true));
+}
+
+pub var prof_style_ns: u64 = 0;
+pub var prof_js_task_ns: u64 = 0;
+pub var prof_replay_ns: u64 = 0;
+pub var prof_style_shared: u64 = 0;
+pub var prof_style_elems: u64 = 0;
+pub var prof_ss_has: u64 = 0;
+pub var prof_ss_unshare: u64 = 0;
+pub var prof_ss_univ: u64 = 0;
+pub var prof_ss_cand: u64 = 0;
+pub var prof_ss_rec: u64 = 0;
+pub var prof_layout_ns: u64 = 0;
+pub var prof_layout_runs: u64 = 0;
+pub var prof_lay_gen_ns: u64 = 0;
+pub var prof_lay_size_ns: u64 = 0;
+pub var prof_lay_fin_ns: u64 = 0;
+pub var prof_list_ns: u64 = 0;
+pub var prof_svg_ns: u64 = 0;
+pub var prof_gc_ns: u64 = 0;
+pub var prof_html_ns: u64 = 0;
+pub var prof_query_ns: u64 = 0;
+pub var prof_compile_ns: u64 = 0;
+pub var prof_compile_calls: u64 = 0;
+pub var prof_interp_ops: u64 = 0;
+pub var prof_jit_disabled: u64 = 0;
+pub var prof_jit_calls: u64 = 0;
+pub var prof_nat_calls: u64 = 0;
+pub var prof_nat_ns: u64 = 0;
+pub var prof_slow_ops: u64 = 0;
+pub var prof_slow_hist: [256]u64 = @splat(0);
+pub var prof_ic_helpers: u64 = 0;
+pub var prof_ic_acc: u64 = 0;
+pub var prof_ic_miss_slot: u64 = 0;
+pub var prof_ic_prim: u64 = 0;
+pub var prof_ic_exotic: u64 = 0;
+pub var prof_ss_rej_style: u64 = 0;
+pub var prof_ss_rej_id: u64 = 0;
+pub var prof_ss_rej_state: u64 = 0;
+pub var prof_ss_rej_val: u64 = 0;
+pub var prof_ss_rej_root_host: u64 = 0;
+pub var prof_ss_rej_tag: u64 = 0;
+pub var prof_ss_miss_gen: u64 = 0;
+pub var prof_ss_miss_pstyle: u64 = 0;
+pub var prof_ss_miss_cousin: u64 = 0;
+pub var prof_ss_miss_key: u64 = 0;
+pub var prof_lay_adopted: u64 = 0;
+pub const HtmlTag = enum(u8) {
+    other,
+    br,
+    wbr,
+    input,
+    button,
+    control,
+    img,
+    replaced,
+    list,
+    table,
+    tr,
+    cell,
+    center,
+    details,
+    slot,
+};
+
+const html_tag_map = std.StaticStringMap(HtmlTag).initComptime(.{
+    .{ "br", .br },
+    .{ "wbr", .wbr },
+    .{ "input", .input },
+    .{ "button", .button },
+    .{ "select", .control },
+    .{ "textarea", .control },
+    .{ "progress", .control },
+    .{ "meter", .control },
+    .{ "img", .img },
+    .{ "canvas", .replaced },
+    .{ "video", .replaced },
+    .{ "iframe", .replaced },
+    .{ "object", .replaced },
+    .{ "embed", .replaced },
+    .{ "ol", .list },
+    .{ "ul", .list },
+    .{ "menu", .list },
+    .{ "dir", .list },
+    .{ "table", .table },
+    .{ "tr", .tr },
+    .{ "td", .cell },
+    .{ "th", .cell },
+    .{ "center", .center },
+    .{ "details", .details },
+    .{ "slot", .slot },
+});
+
+pub inline fn classifyHtmlTag(name: []const u8) HtmlTag {
+    return html_tag_map.get(name) orelse .other;
+}
+
+pub fn nowNs() u64 {
+    return @import("js/conv.zig").monotonicNs();
 }

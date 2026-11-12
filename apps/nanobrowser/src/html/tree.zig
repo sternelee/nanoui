@@ -347,7 +347,7 @@ pub const Builder = struct {
     pub fn newElement(b: *Builder, name: []const u8, ns: dom.Ns, attrs: []dom.Attr) Error!*dom.Node {
         const n = try b.arena.create(dom.Node);
         const perf = @import("../perf_rules.zig");
-        n.* = .{ .kind = .element, .doc = b.doc, .tag = name, .ns = ns, .has_resource = perf.isResourceTag(name), .has_insertion_work = perf.isInsertionWorkTag(name) };
+        n.* = .{ .kind = .element, .doc = b.doc, .tag = name, .ns = ns, .html_tag = if (ns == .html) perf.classifyHtmlTag(name) else .other, .has_resource = perf.isResourceTag(name), .has_insertion_work = perf.isInsertionWorkTag(name) };
         if (attrs.len > 0) {
             n.attrs = .fromOwnedSlice(attrs);
             for (attrs) |a| {
@@ -402,7 +402,7 @@ pub const Builder = struct {
         if (b.open.items.len >= max_depth) b.pop();
         const n = try b.newElement(name, ns, attrs);
         const at = b.placeFor(null);
-        at.parent.insertBefore(n, at.before);
+        at.parent.parserInsert(n, at.before);
         return n;
     }
 
@@ -443,14 +443,14 @@ pub const Builder = struct {
         if (at.parent.kind == .document) return;
         const n = try b.arena.create(dom.Node);
         n.* = .{ .kind = .text, .doc = b.doc, .data = s };
-        at.parent.insertBefore(n, at.before);
+        at.parent.parserInsert(n, at.before);
     }
 
     pub fn insertComment(b: *Builder, s: []const u8, into: ?*dom.Node) Error!void {
         const n = try b.arena.create(dom.Node);
         n.* = .{ .kind = .comment, .doc = b.doc, .data = s };
         const parent = into orelse contentOf(if (b.current()) |c| c.node else b.root);
-        parent.appendChild(n);
+        parent.parserInsert(n, null);
     }
 
     /// Gives `n` the attributes of `t` it does not have (`<html>`, `<body>`

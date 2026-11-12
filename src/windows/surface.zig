@@ -17,6 +17,7 @@ const frame_mod = @import("../ui/frame.zig");
 const ctx_mod = @import("../ui/context.zig");
 const clock = @import("../ui/clock.zig");
 const Theme = @import("../ui/theme.zig").Theme;
+const sameChoice = @import("../ui/theme.zig").sameChoice;
 const Context = ctx_mod.Context;
 const Window = @import("window.zig").Window;
 const d3d = @import("d3d.zig");
@@ -24,6 +25,7 @@ const d3d11 = @import("../ui/d3d11.zig");
 const gpu_side = @import("surface_gpu.zig");
 const ime = @import("ime.zig");
 const keys = @import("surface_win_keys.zig");
+const mouse = @import("surface_win_mouse.zig");
 const pace_side = @import("surface_pace.zig");
 const vblank = @import("vblank.zig");
 const frame_log = @import("../ui/frame_log.zig");
@@ -70,6 +72,12 @@ pub const Surface = struct {
     shown_custom: ?*anyopaque = null,
     /// A UTF-16 high surrogate waiting for its other half.
     high: u16 = 0,
+    /// Alt was part of a gesture (a click, a combination the view took)
+    /// since it went down: its release must not open the window menu.
+    alt_used: bool = false,
+    /// The view took the last WM_SYSKEYDOWN: its WM_SYSCHAR is not a menu
+    /// mnemonic for DefWindowProc to beep at (surface_win_keys.zig).
+    sys_taken: bool = false,
     /// The IME's state for this window: a composition running, the guard that
     /// keeps a placement from echoing into a freeze, and the caret last told
     /// about. `ime.zig` says why each one exists.
@@ -127,6 +135,8 @@ pub const Surface = struct {
         if (window.app.gui and !window.app.flags.hidden) self.text.enablePersistence(window.app.options.name);
         self.ctx = .init(gpa, &self.text);
         self.ctx.input.window_active = window.isFocused();
+        // WM_KEYUP and WM_SYSKEYUP reach the view (surface_win_keys.zig).
+        self.ctx.key_up_supported = true;
         // No theme background under a transparent window's view.
         self.ctx.transparent_root = window.transparent;
         // Diagnostics, off unless asked for: which presenter draws the frame,
@@ -261,13 +271,6 @@ pub const Surface = struct {
         self.trace("built: {d:.0}x{d:.0} scale {d:.2}, {d} draws, anim={} hot={} in={?d:.2} ticking={}", .{ self.size.w, self.size.h, self.scale, self.instances.items.len, c.animating, r.hot_changed, c.frame_in, self.ticking });
     }
 
-    /// Whether two theme choices pick the same theme (both null: the system's).
-    fn sameChoice(a: ?Theme, b: ?Theme) bool {
-        const an = a orelse return b == null;
-        const bn = b orelse return false;
-        return std.meta.eql(an, bn);
-    }
-
     /// The frame log, recording from now on (`NANOUI_FRAMES` opens one
     /// that writes a file).
     pub fn recordFrames(self: *Surface, gpa: std.mem.Allocator) !*frame_log.FrameLog {
@@ -315,13 +318,11 @@ pub const Surface = struct {
     /// The window's client size and DPI, read into the surface (`client_size.zig`).
     pub const updateSize = @import("client_size.zig").updateSize;
 
-    fn setMouse(self: *Surface, lp: w.LPARAM) void {
+    pub fn setMouse(self: *Surface, lp: w.LPARAM) void {
         const x: i16 = @truncate(lp);
         const y: i16 = @truncate(lp >> 16);
         self.ctx.input.mouse = .{ .x = @as(f32, @floatFromInt(x)) / self.scale, .y = @as(f32, @floatFromInt(y)) / self.scale };
-        self.ctx.input.shift = w.GetKeyState(0x10) < 0;
-        self.ctx.input.cmd = false;
-        self.ctx.input.ctrl = w.GetKeyState(0x11) < 0;
+        keys.readMods(self);
     }
 
     /// The window procedure's part for native UI; null for messages it
@@ -332,7 +333,13 @@ pub const Surface = struct {
             w.WM_ERASEBKGND => return 1,
             w.WM_SETFOCUS, w.WM_KILLFOCUS, w.WM_ACTIVATEAPP => {
                 self.ctx.input.window_active = if (msg == w.WM_ACTIVATEAPP) wp != 0 and self.window.isFocused() else msg == w.WM_SETFOCUS;
+                if (self.ctx.input.window_active) keys.readMods(self) else keys.releaseKeys(self);
                 self.frame();
+            },
+            w.WM_ENTERMENULOOP, w.WM_CANCELMODE => {
+                keys.releaseKeys(self);
+                self.frame();
+                return null;
             },
             w.WM_SHOWWINDOW => if (wp != 0) self.requestFrame(),
             w.WM_DISPLAYCHANGE => {
@@ -448,37 +455,13 @@ pub const Surface = struct {
                     self.frame();
                 }
             },
-            w.WM_LBUTTONDOWN, w.WM_LBUTTONDBLCLK => {
-                self.setMouse(lp);
-                self.ctx.input.click_count = if (msg == w.WM_LBUTTONDBLCLK) 2 else 1;
-                self.ctx.updateHot();
-                // A borderless window's drag handle (`window_drag`): the press
-                // belongs to the system's move loop, the way macOS hands the
-                // event to `performWindowDragWithEvent`. A double click zooms.
-                if (self.ctx.startsWindowDrag()) {
-                    if (msg == w.WM_LBUTTONDBLCLK) {
-                        self.window.zoom();
-                    } else {
-                        _ = w.ReleaseCapture();
-                        _ = w.SendMessageW(h, w.WM_NCLBUTTONDOWN, w.HTCAPTION, 0);
-                    }
-                    return 0;
-                }
-                _ = w.SetCapture(h);
-                self.ctx.pointerDown();
-                self.frame();
-            },
-            w.WM_LBUTTONUP => {
-                _ = w.ReleaseCapture();
-                self.setMouse(lp);
-                self.ctx.updateHot();
-                self.ctx.pointerUp();
-                self.frame();
-            },
+            // The buttons, and the capture lost mid-press: `surface_win_mouse.zig`.
+            w.WM_LBUTTONDOWN, w.WM_LBUTTONDBLCLK, w.WM_LBUTTONUP, w.WM_MBUTTONDOWN, w.WM_MBUTTONDBLCLK, w.WM_MBUTTONUP, w.WM_CAPTURECHANGED => return mouse.message(self, h, msg, wp, lp),
             w.WM_MOUSEWHEEL => {
                 var p: w.POINT = .{ .x = @as(i16, @truncate(lp)), .y = @as(i16, @truncate(lp >> 16)) };
                 _ = w.ScreenToClient(h, &p);
                 self.ctx.input.mouse = .{ .x = @as(f32, @floatFromInt(p.x)) / self.scale, .y = @as(f32, @floatFromInt(p.y)) / self.scale };
+                keys.readMods(self);
                 const notches: f32 = @as(f32, @floatFromInt(@as(i16, @truncate(@as(isize, @bitCast(wp)) >> 16)))) / 120;
                 const delta = notches * 48;
                 // Turns between two refreshes are one frame: a scroll box's
@@ -497,32 +480,26 @@ pub const Surface = struct {
                 var p: w.POINT = .{ .x = @as(i16, @truncate(lp)), .y = @as(i16, @truncate(lp >> 16)) };
                 _ = w.ScreenToClient(h, &p);
                 self.ctx.input.mouse = .{ .x = @as(f32, @floatFromInt(p.x)) / self.scale, .y = @as(f32, @floatFromInt(p.y)) / self.scale };
+                keys.readMods(self);
                 const notches: f32 = @as(f32, @floatFromInt(@as(i16, @truncate(@as(isize, @bitCast(wp)) >> 16)))) / 120;
                 self.ctx.input.scroll.x += notches * 48;
                 pace_side.onInput(self);
             },
-            w.WM_KEYDOWN, w.WM_SYSKEYDOWN => {
+            w.WM_KEYDOWN, w.WM_SYSKEYDOWN, w.WM_KEYUP, w.WM_SYSKEYUP, w.WM_SYSCHAR => {
                 // F12, with NANOUI_DUMP set: what the canvas holds, and what
                 // drawing the same frame whole makes of it.
-                if (wp == 0x7B and self.dump_enabled) {
+                if (msg == w.WM_KEYDOWN and wp == 0x7B and self.dump_enabled) {
                     gpu_side.verify(self);
                     return 0;
                 }
-                // Composing: the keys belong to the input method — its caret,
-                // its candidates, Return to commit. Handling them here as well
-                // makes Return commit and insert a newline at the same time.
-                // A *system* key is another matter: Alt+F4 and its friends must
-                // keep working, so they go to the default handling.
-                if (self.ime.composing) return if (msg == w.WM_SYSKEYDOWN) null else 0;
-                if (keys.keyDown(self, @intCast(wp))) {
-                    // An arrow key or a delete moved the caret: the IME's windows
-                    // follow it, outside `frame` where its callbacks re-enter.
-                    if (self.ctx.focused_text != null) ime.follow(h, &self.ctx, self.scale, &self.ime);
-                    return 0;
-                }
-                return null;
+                return keys.message(self, h, msg, wp, lp);
             },
-            w.WM_CHAR, w.WM_IME_CHAR => ime.char(self, @truncate(wp)),
+            w.WM_CHAR, w.WM_IME_CHAR => {
+                // A held key's characters repeat too (bit 30, as WM_KEYDOWN's).
+                self.ctx.input.repeat = msg == w.WM_CHAR and keys.names.isRepeat(lp);
+                ime.char(self, @truncate(wp));
+                self.ctx.input.repeat = false;
+            },
             // The input method and its windows: `ime.zig` has the lot.
             else => if (ime.handle(self, h, msg, wp, lp)) |r| return r else return null,
         }

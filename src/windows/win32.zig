@@ -312,11 +312,18 @@ pub const SWP_NOACTIVATE: u32 = 0x0010;
 /// how a client area that no longer belongs to the window is made to fit it.
 pub const SWP_FRAMECHANGED: u32 = 0x0020;
 pub const WM_KEYDOWN = 0x0100;
+pub const WM_KEYUP = 0x0101;
 pub const WM_CHAR = 0x0102;
 pub const WM_SYSKEYDOWN = 0x0104;
+pub const WM_SYSKEYUP = 0x0105;
+pub const WM_SYSCHAR = 0x0106;
 pub const WM_TIMER = 0x0113;
 /// The window became, or stopped being, the active application.
 pub const WM_ACTIVATEAPP = 0x001C;
+/// A modal loop takes over (a message box, a dialog): capture and keys go.
+pub const WM_CANCELMODE = 0x001F;
+/// A menu's modal loop begins (the window menu, F10, TrackPopupMenu).
+pub const WM_ENTERMENULOOP = 0x0211;
 pub const WM_SHOWWINDOW = 0x0018;
 /// The display's resolution or color depth changed.
 pub const WM_DISPLAYCHANGE = 0x007E;
@@ -324,6 +331,18 @@ pub const WM_MOUSEMOVE = 0x0200;
 pub const WM_LBUTTONDOWN = 0x0201;
 pub const WM_LBUTTONUP = 0x0202;
 pub const WM_LBUTTONDBLCLK = 0x0203;
+/// The middle button (the wheel pressed): down, up, and down again as a
+/// double click (the class has CS_DBLCLKS).
+pub const WM_MBUTTONDOWN = 0x0207;
+pub const WM_MBUTTONUP = 0x0208;
+pub const WM_MBUTTONDBLCLK = 0x0209;
+/// The mouse capture went from this window (lParam: the window that took
+/// it, or null): no button-up for a press in flight will come.
+pub const WM_CAPTURECHANGED = 0x0215;
+/// A mouse message's wParam: the buttons held as it was sent.
+pub const MK_LBUTTON: usize = 0x0001;
+pub const MK_RBUTTON: usize = 0x0002;
+pub const MK_MBUTTON: usize = 0x0010;
 pub const WM_MOUSEWHEEL = 0x020A;
 /// The sideways wheel (a tilt, a trackpad's two-finger sideways slide).
 pub const WM_MOUSEHWHEEL = 0x020E;

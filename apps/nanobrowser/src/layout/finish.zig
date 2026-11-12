@@ -8,11 +8,27 @@ const box = @import("box.zig");
 const css = @import("../css/style.zig");
 const ctx = @import("ctx.zig");
 const positioned = @import("positioned.zig");
+const cache = @import("cache.zig");
 const Box = box.Box;
 const Ctx = ctx.Ctx;
 const Error = ctx.Error;
 
-const Cbs = struct { abs: *Box, fixed: ?*Box };
+pub const Cbs = struct { abs: *Box, fixed: ?*Box };
+
+/// Places and finishes a single out-of-flow child `x` of a parent box at page offset `(ox, oy)`.
+pub fn placeOutOfFlowChild(c: *Ctx, x: *Box, ox: f32, oy: f32, cbs: Cbs) Error!void {
+    const fixed = x.style.position == .fixed;
+    const cb: ?*Box = if (fixed) cbs.fixed else cbs.abs;
+    try positioned.place(c, x, x.x + ox, x.y + oy, cb);
+    try inside(c, x, x.x, x.y, nextCbs(x, cbs));
+    cache.recordFinished(c, x);
+    if (!fixed or cb != null) {
+        const target = cb.?;
+        const reach = extents(x);
+        target.lay.extra_r = @max(target.lay.extra_r, reach[0]);
+        target.lay.extra_b = @max(target.lay.extra_b, reach[1]);
+    }
+}
 
 /// Finishes the tree under the initial containing block.
 pub fn run(c: *Ctx, root: *Box) Error!void {
@@ -48,6 +64,10 @@ fn relativeOffset(b: *const Box) [2]f32 {
 /// to, then finishes what is in it.
 fn visit(c: *Ctx, b: *Box, ox: f32, oy: f32, cbs: Cbs) Error!void {
     const rel = relativeOffset(b);
+    if (b.lay.adopted) {
+        try cache.finishAdopted(c, b, ox + rel[0], oy + rel[1]);
+        return;
+    }
     b.x += ox + rel[0];
     b.y += oy + rel[1];
     if (b.kind == .inline_box) {
@@ -59,9 +79,11 @@ fn visit(c: *Ctx, b: *Box, ox: f32, oy: f32, cbs: Cbs) Error!void {
             r.y += inner_y;
         }
         try inside(c, b, inner_x, inner_y, nextCbs(b, cbs));
+        cache.recordFinished(c, b);
         return;
     }
     try inside(c, b, b.x, b.y, nextCbs(b, cbs));
+    cache.recordFinished(c, b);
 }
 
 fn nextCbs(b: *Box, cbs: Cbs) Cbs {
@@ -90,16 +112,7 @@ fn inside(c: *Ctx, b: *Box, ox: f32, oy: f32, cbs: Cbs) Error!void {
     var k = b.first_child;
     while (k) |x| : (k = x.next) {
         if (x.style.isOutOfFlow()) {
-            const fixed = x.style.position == .fixed;
-            const cb: ?*Box = if (fixed) cbs.fixed else cbs.abs;
-            try positioned.place(c, x, x.x + ox, x.y + oy, cb);
-            try inside(c, x, x.x, x.y, nextCbs(x, cbs));
-            if (!fixed or cb != null) {
-                const target = cb.?;
-                const reach = extents(x);
-                target.lay.extra_r = @max(target.lay.extra_r, reach[0]);
-                target.lay.extra_b = @max(target.lay.extra_b, reach[1]);
-            }
+            try placeOutOfFlowChild(c, x, ox, oy, cbs);
             continue;
         }
         try visit(c, x, ox, oy, cbs);

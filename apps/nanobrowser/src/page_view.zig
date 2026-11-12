@@ -21,91 +21,16 @@ const motion = @import("page_motion.zig");
 const frames = @import("frames.zig");
 const web = @import("web/web.zig");
 const webfonts = @import("webfonts.zig");
+const font_cache = @import("font_cache.zig");
 const perf = @import("perf_rules.zig");
 const Page = @import("page.zig").Page;
 
 fn needsPrepare(p: *const Page) bool {
-    return perf.needsPrepare(p.doc.style_dirty, p.doc.layout_dirty, p.list_dirty, p.doc.svg_dirty, p.list != null);
+    return perf.needsPrepare(p.doc.style_dirty, p.doc.layout_dirty or p.doc.oof_dirty_node != null, p.list_dirty, p.doc.svg_dirty, p.list != null);
 }
 
-/// What layout measures with during a frame.
-const Fonts = struct {
-    p: *Page,
-    c: *ui.Context,
-    space_key: u64 = 0,
-    space_w: f32 = 0,
-    metrics_key: u64 = 0,
-    metrics_val: box.Metrics = .{},
-
-    fn width(ctx: *anyopaque, text: []const u8, font: box.Font) f32 {
-        const f: *Fonts = @ptrCast(@alignCast(ctx));
-        if (font.size <= 0) return 0;
-        const is_space = text.len == 1 and text[0] == ' ';
-        if (is_space and f.space_key == font.key()) return f.space_w;
-        const k = font.wordKey(text);
-        if (f.p.widths.get(k)) |w| {
-            if (is_space) { f.space_key = font.key(); f.space_w = w; }
-            return w;
-        }
-        webfonts.need(f.p, f.c, font, text);
-        const w = f.c.text.width(text, replay.textStyle(font));
-        if (!f.p.faces.changed) {
-            f.p.widths.put(f.p.gpa, k, w) catch {};
-            if (is_space) { f.space_key = font.key(); f.space_w = w; }
-        }
-        return w;
-    }
-
-    fn metrics(ctx: *anyopaque, font: box.Font) box.Metrics {
-        const f: *Fonts = @ptrCast(@alignCast(ctx));
-        if (font.size <= 0) return .{ .ascent = 0, .descent = 0, .gap = 0 };
-        const k = font.key();
-        if (f.metrics_key == k) return f.metrics_val;
-        if (f.p.font_metrics.get(k)) |m| { f.metrics_key = k; f.metrics_val = m; return m; }
-        webfonts.need(f.p, f.c, font, "");
-        const m = lineMetrics(f.c, replay.textStyle(font));
-        if (!f.p.faces.changed) { f.p.font_metrics.put(f.p.gpa, k, m) catch {}; f.metrics_key = k; f.metrics_val = m; }
-        return m;
-    }
-
-    fn image(ctx: *anyopaque, node: *dom.Node) ?box.Size {
-        const f: *Fonts = @ptrCast(@alignCast(ctx));
-        if (node.image.len == 0) return null;
-        if (replay.isSvg(node.image)) return svgNatural(node.image);
-        const s = ui.imageSize(f.c, node.image_key, node.image) orelse return null;
-        return .{ .w = s.w, .h = s.h };
-    }
-
-    /// An SVG picture's own size; with only a viewBox, its shape alone
-    /// (`Measurer.image`); with neither, what any picture without one is.
-    fn svgNatural(bytes: []const u8) box.Size {
-        const own = replay.svgOwn(bytes);
-        if (own.size) |v| return .{ .w = v[0], .h = v[1] };
-        if (own.ratio) |r| return .{ .w = -1, .h = r };
-        return .{ .w = 300, .h = 150 };
-    }
-
-    fn measurer(f: *Fonts) box.Measurer {
-        return .{ .ctx = f, .width = width, .metrics = metrics, .image = image, .widths = &f.p.widths, .widths_gpa = f.p.gpa };
-    }
-};
-
-/// A font's line metrics as Chromium has them: each rounded to whole pixels, and on
-/// the Mac the ascent of the three classic faces raised to match their Windows
-/// counterparts (`FontMetrics::AscentDescentWithHacks`).
-pub fn lineMetrics(c: *ui.Context, style: ui.TextStyle) box.Metrics {
-    const m = c.text.font(style);
-    var ascent = @round(m.ascent);
-    const descent = @round(m.descent);
-    if (builtin.os.tag == .macos) {
-        var buf: [64]u8 = undefined;
-        const name = c.text.familyName(style, &buf);
-        if (std.mem.eql(u8, name, "Times") or std.mem.eql(u8, name, "Helvetica") or std.mem.eql(u8, name, "Courier")) {
-            ascent += @floor((ascent + descent) * 0.15 + 0.5);
-        }
-    }
-    return .{ .ascent = ascent, .descent = descent, .gap = @round(m.leading), .x_height = m.x_height };
-}
+const Fonts = font_cache.Fonts;
+pub const lineMetrics = font_cache.lineMetrics;
 
 /// Style and box layout (`p.tree`) brought up to date for a viewport of `w` × `h`,
 /// deferring display-list construction (`makeList`) until `prepare`.
@@ -127,6 +52,17 @@ pub fn flushLayoutOnly(p: *Page, c: *ui.Context, w: f32, h: f32) void {
     }
     defer if (resize_from) |from| resize.done(p, from);
     flushStyle(p);
+    if (!p.doc.layout_dirty and p.tree != null) {
+        if (p.doc.oof_dirty_node) |oof_n| {
+            p.doc.oof_dirty_node = null;
+            var fonts: Fonts = .{ .p = p, .c = c };
+            if (layout.relayoutOutOfFlow(p.layout_arena.allocator(), p.doc, &p.tree.?, .{ .width = p.viewport_w, .height = p.viewport_h }, fonts.measurer(), oof_n) catch false) {
+                p.list_dirty = true;
+            } else {
+                p.doc.layout_dirty = true;
+            }
+        }
+    }
     if (p.doc.layout_dirty or p.tree == null) relayoutTree(p, c);
 }
 
@@ -144,7 +80,7 @@ pub fn prepare(p: *Page, c: *ui.Context, w: f32, h: f32) void {
 fn runAnimations(p: *Page, c: *ui.Context) void {
     p.engine.now = c.time;
     const plan = p.engine.anim.tick(&p.engine, c.time);
-    if (plan.layout) p.doc.layout_dirty = true;
+    if (plan.layout) p.doc.touchLayout();
     p.motion_unseen = p.engine.anim.states.count() > 0 and !motion.anyShown(p);
     if (plan.paint) {
         if (p.motion_unseen) p.list_stale = true else p.list_dirty = true;
@@ -164,12 +100,87 @@ fn wantFrames(p: *Page, c: *ui.Context) void {
     } else if (plan.wake_in) |seconds| c.frameIn(@max(seconds, 0.001));
 }
 
+fn recordStyleChange(p: *Page, change: css.Change) void {
+    const d = p.doc;
+    switch (change) {
+        .none => {},
+        // Boxes hold the very styles that changed.
+        .paint => p.list_dirty = true,
+        .layout => {
+            if (!d.layout_dirty and p.tree != null and p.engine.containers.count() == 0 and !p.engine.layout_change_many and p.engine.layout_change_node != null) {
+                const cand = p.engine.layout_change_node.?;
+                if (d.oof_dirty_node == null or d.oof_dirty_node == cand) {
+                    d.oof_dirty_node = cand;
+                } else if (d.oof_dirty_node.?.contains(cand)) {
+                    // already covered
+                } else if (cand.contains(d.oof_dirty_node.?)) {
+                    d.oof_dirty_node = cand;
+                } else {
+                    d.oof_dirty_node = null;
+                    d.layout_dirty = true;
+                }
+            } else {
+                d.oof_dirty_node = null;
+                d.layout_dirty = true;
+            }
+        },
+    }
+}
+
+/// Theorem 75 (`NanoUI.Speedometer3Apex.cone_scoped_style_flush_and_exotic_index_equiv`):
+/// Brings `n`'s computed style up to date without flushing disjoint dirty subtrees.
+pub fn flushStyleForNode(p: *Page, n: *dom.Node) void {
+    const d = p.doc;
+    if (!d.style_dirty) return;
+    if (d.dirty_all or d.scan_dirty or p.engine.generation == 0 or p.engine.index_dirty or p.engine.containers.count() > 0 or (p.engine.index != null and p.engine.index.?.uses_has)) {
+        flushStyle(p);
+        return;
+    }
+    var top: ?*dom.Node = null;
+    var connected = false;
+    var at: ?*dom.Node = n;
+    while (at) |x| : (at = x.parent) {
+        if (x.kind == .document) connected = true;
+        if (x.style_queued) top = x;
+    }
+    if (!connected) return;
+    const target = top orelse {
+        if (n.style_generation == p.engine.generation) return;
+        flushStyle(p);
+        return;
+    };
+    if (target.kind == .document or d.documentElement() == target) {
+        flushStyle(p);
+        return;
+    }
+    const t0 = perf.nowNs();
+    defer perf.prof_style_ns += perf.nowNs() -| t0;
+    p.engine.layout_change_node = null;
+    p.engine.layout_change_many = false;
+    const change = p.engine.restyleChanged(target) catch .layout;
+    recordStyleChange(p, change);
+    var write_idx: usize = 0;
+    for (d.dirty_nodes.items) |q| {
+        if (!q.style_queued) continue;
+        if (q == target or target.contains(q)) {
+            q.style_queued = false;
+        } else {
+            d.dirty_nodes.items[write_idx] = q;
+            write_idx += 1;
+        }
+    }
+    d.dirty_nodes.items.len = write_idx;
+    if (write_idx == 0) d.style_dirty = false;
+}
+
 /// Style brought up to date, as far as what changed reaches. Layout follows
 /// when the style is any different, or the tree was already.
 pub fn flushStyle(p: *Page) void {
     const d = p.doc;
     if (!d.style_dirty) return;
     loader.scan(p);
+    const t0 = perf.nowNs();
+    defer perf.prof_style_ns += perf.nowNs() -| t0;
     p.title_stale = true;
     d.style_dirty = false;
     if (d.dirty_all) {
@@ -177,9 +188,12 @@ pub fn flushStyle(p: *Page) void {
         p.engine.restyleAll() catch {};
         d.dirty_all = false;
         d.dirty_nodes.clearRetainingCapacity();
+        d.oof_dirty_node = null;
         d.layout_dirty = true;
         return;
     }
+    p.engine.beginFlush();
+    defer p.engine.in_batch_flush = false;
     for (d.dirty_nodes.items) |n| {
         if (!n.style_queued) continue;
         // Under one already done, or no longer in the document: nothing to do.
@@ -192,13 +206,10 @@ pub fn flushStyle(p: *Page) void {
         }
         if (covered or !connected) continue;
         const target = if (n.kind == .document) d.documentElement() orelse continue else n;
+        p.engine.layout_change_node = null;
+        p.engine.layout_change_many = d.layout_dirty;
         const change = p.engine.restyleChanged(target) catch .layout;
-        switch (change) {
-            .none => {},
-            // Boxes hold the very styles that changed.
-            .paint => p.list_dirty = true,
-            .layout => d.layout_dirty = true,
-        }
+        recordStyleChange(p, change);
     }
     for (d.dirty_nodes.items) |n| n.style_queued = false;
     d.dirty_nodes.clearRetainingCapacity();
@@ -206,13 +217,18 @@ pub fn flushStyle(p: *Page) void {
 }
 
 pub fn relayoutTree(p: *Page, c: *ui.Context) void {
+    const t0 = perf.nowNs();
+    defer perf.prof_layout_ns += perf.nowNs() -| t0;
+    const had_prev = p.tree != null;
+    std.mem.swap(std.heap.ArenaAllocator, &p.layout_arena, &p.prev_layout_arena);
     _ = p.layout_arena.reset(.retain_capacity);
     const a = p.layout_arena.allocator();
     var fonts: Fonts = .{ .p = p, .c = c };
     const m = fonts.measurer();
     p.layouts +%= 1;
     p.doc.layout_dirty = false;
-    var tree = layout.run(a, p.doc, .{ .width = p.viewport_w, .height = p.viewport_h }, m) catch {
+    p.doc.oof_dirty_node = null;
+    var tree = layout.runCached(a, p.doc, .{ .width = p.viewport_w, .height = p.viewport_h }, m, had_prev) catch {
         p.tree = null;
         p.list = null;
         return;
@@ -220,8 +236,9 @@ pub fn relayoutTree(p: *Page, c: *ui.Context) void {
     // A container's size decides its contents' style. Each pass settles a level.
     var passes: u8 = 0;
     while (passes < 4 and layout.updateContainers(&p.engine)) : (passes += 1) {
+        p.doc.invalidateLayoutCache();
         _ = p.layout_arena.reset(.retain_capacity);
-        tree = layout.run(a, p.doc, .{ .width = p.viewport_w, .height = p.viewport_h }, m) catch {
+        tree = layout.runCached(a, p.doc, .{ .width = p.viewport_w, .height = p.viewport_h }, m, false) catch {
             p.tree = null;
             p.list = null;
             return;
@@ -241,10 +258,14 @@ pub fn relayout(p: *Page, c: *ui.Context) void {
 }
 
 fn makeList(p: *Page, tree: box.Tree, m: box.Measurer) void {
+    const t0 = perf.nowNs();
+    defer perf.prof_list_ns += perf.nowNs() -| t0;
     p.list_dirty = false;
     p.list_stale = false;
     p.lists +%= 1;
+    const ts = perf.nowNs();
     svg_markup.refresh(p);
+    perf.prof_svg_ns += perf.nowNs() -| ts;
     _ = p.list_arena.reset(.retain_capacity);
     p.list = display.build(p.list_arena.allocator(), tree, p.doc.node, m, &p.scrolls) catch null;
     if (p.restore_scroll > 0) if (p.list) |*l| {
@@ -367,36 +388,6 @@ fn underPointer(p: *Page, x: f32, y: f32) Under {
     return .{ .page = p, .node = n };
 }
 
-/// A wheel over a frame scrolls it while it can, then what holds it.
-fn wheelThrough(p: *Page, c: *ui.Context, x: f32, y: f32, dx: f32, dy: f32) void {
-    const l = if (p.list) |*q| q else return;
-    const n = l.hit(x, y);
-    if (n) |e| if (e.isTag("iframe")) if (frames.childPage(p, e)) |child| {
-        if (child.list != null and child.frame.?.rect.contains(x, y) and canScroll(child, x, y, dx, dy)) return wheelThrough(child, c, x, y, dx, dy);
-    };
-    wheel(p, c, l, x, y, dx, dy);
-}
-
-/// An `<iframe scrolling=no>`: its page stays where it is, with no bar.
-fn noScrolling(p: *const Page) bool {
-    const f = p.frame orelse return false;
-    const v = f.node.attr("scrolling") orelse return false;
-    const eq = std.ascii.eqlIgnoreCase;
-    return eq(v, "no") or eq(v, "noscroll") or eq(v, "off");
-}
-
-fn canScroll(p: *Page, x: f32, y: f32, dx: f32, dy: f32) bool {
-    if (noScrolling(p)) return false;
-    const l = if (p.list) |*q| q else return false;
-    const n = l.hit(x, y);
-    if (n) |e| if (e.isTag("iframe")) if (frames.childPage(p, e)) |child| {
-        if (child.list != null and canScroll(child, x, y, dx, dy)) return true;
-    };
-    const i = l.scrollerAt(x, y, dx, dy);
-    if (i == 1 and !l.clips[1].scrolls) return false;
-    return l.canMove(i, dx, dy);
-}
-
 /// Draws the page in `rect` (window coordinates) and takes its input.
 pub fn view(p: *Page, c: *ui.Context, rect: box.Rect) void {
     p.busy += 1;
@@ -503,96 +494,20 @@ pub fn view(p: *Page, c: *ui.Context, rect: box.Rect) void {
         }
     }
     web.paintStart(p);
+    const rep_t0 = perf.nowNs();
     replay.replay(c, shown, Replay{ .p = p }, rect);
+    perf.prof_replay_ns += perf.nowNs() -| rep_t0;
     @import("find.zig").draw(p, c, shown, rect);
     scrollbar(c, shown, rect);
     controls.selectList(p, c, rect);
     web.paintEnd(p);
 }
 
-fn wheel(p: *Page, c: *ui.Context, l: *display.List, x: f32, y: f32, dx: f32, dy: f32) void {
-    const i = l.scrollerAt(x, y, dx, dy);
-    if (i == 1 and !l.clips[1].scrolls) return;
-    if (c.input.precise) scrollBy(p, l, i, -dx, -dy) else glide.by(p, c, l, i, -dx, -dy);
-}
-
-pub fn scrollBy(p: *Page, l: *display.List, i: u32, dx: f32, dy: f32) void {
-    p.glide = null;
-    moveBy(p, l, i, dx, dy);
-}
-
-/// `scrollBy` for a glide, which goes on.
-pub fn moveBy(p: *Page, l: *display.List, i: u32, dx: f32, dy: f32) void {
-    const c = &l.clips[i];
-    const m = l.maxScroll(i);
-    const was = [2]f32{ c.scroll_x, c.scroll_y };
-    c.scroll_x = std.math.clamp(c.scroll_x + dx, 0, m[0]);
-    c.scroll_y = std.math.clamp(c.scroll_y + dy, 0, m[1]);
-    p.restore_scroll = 0;
-    if (c.scroll_x != was[0] or c.scroll_y != was[1]) {
-        l.scroll_rev +%= 1;
-        p.hover_held_until = p.engine.now + 0.12;
-    }
-    const key = if (i == 1) p.doc.node else c.node orelse return;
-    p.scrolls.put(p.gpa, key, .{ c.scroll_x, c.scroll_y }) catch {};
-    web.scrolled(p, key);
-}
-
-/// Goes to a place in the document: a fragment, a found word.
-pub fn scrollPageTo(p: *Page, y: f32) void {
-    const l = if (p.list) |*x| x else return;
-    const c = &l.clips[1];
-    scrollBy(p, l, 1, 0, y - c.scroll_y);
-}
-
-fn clampScrolls(p: *Page, l: *display.List) void {
-    _ = p;
-    for (l.clips, 0..) |*c, i| {
-        if (i == 0) continue;
-        const m = l.maxScroll(@intCast(i));
-        const sx = std.math.clamp(c.scroll_x, 0, m[0]);
-        const sy = std.math.clamp(c.scroll_y, 0, m[1]);
-        if (sx != c.scroll_x or sy != c.scroll_y) {
-            c.scroll_x = sx;
-            c.scroll_y = sy;
-            l.scroll_rev +%= 1;
-        }
-    }
-}
-
-/// The keys that move a page when nothing is being typed in.
-fn keyScroll(p: *Page, c: *ui.Context, l: *display.List, h: f32) void {
-    if (c.focus != 0 or !l.clips[1].scrolls) return;
-    const step: f32 = 48;
-    if (c.input.key) |k| switch (k) {
-        .up => glide.by(p, c, l, 1, 0, -step),
-        .down => glide.by(p, c, l, 1, 0, step),
-        .left => glide.by(p, c, l, 1, -step, 0),
-        .right => glide.by(p, c, l, 1, step, 0),
-        .page_up => glide.by(p, c, l, 1, 0, -(h - step)),
-        .page_down => glide.by(p, c, l, 1, 0, h - step),
-        .home => glide.by(p, c, l, 1, 0, -1e9),
-        .end => glide.by(p, c, l, 1, 0, 1e9),
-        else => {},
-    };
-    if (c.shortcut(.{ .key = ' ' })) glide.by(p, c, l, 1, 0, h - step);
-    if (c.shortcut(.{ .key = ' ', .shift = true })) glide.by(p, c, l, 1, 0, -(h - step));
-}
-
-/// A slim bar along the right while there's more page than window.
-fn scrollbar(c: *ui.Context, l: *const display.List, rect: box.Rect) void {
-    const page = l.clips[1];
-    if (page.content_h <= rect.h + 1) return;
-    const k = rect.h / page.content_h;
-    const bar_h = @max(24, rect.h * k);
-    const y = (rect.h - bar_h) * page.scroll_y / @max(1, page.content_h - rect.h);
-    _ = c.leaf(.{
-        .absolute = true,
-        .offset = .{ .x = rect.w - 7, .y = y + 2 },
-        .width = .{ .px = 5 },
-        .height = .{ .px = bar_h - 4 },
-        .radius = 2.5,
-        .corner_circular = true,
-        .background = if (c.theme.dark) ui.Color.white.alpha(0.25) else ui.Color.black.alpha(0.22),
-    }, .none, null);
-}
+pub const scrollBy = glide.scrollBy;
+pub const moveBy = glide.moveBy;
+pub const scrollPageTo = glide.scrollPageTo;
+const clampScrolls = glide.clampScrolls;
+const keyScroll = glide.keyScroll;
+const scrollbar = glide.scrollbar;
+const wheelThrough = glide.wheelThrough;
+const noScrolling = glide.noScrolling;
