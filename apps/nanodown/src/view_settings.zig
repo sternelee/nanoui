@@ -292,9 +292,17 @@ fn commandLine(a: *App, c: *ui.Context, p: *const theme.Palette) void {
     defer box.end();
     ui.text(c, "The nanodown command", .{ .size = 12, .weight = .medium, .color = p.ink });
     ui.text(c, "The app is the command: with arguments it runs them, without it opens the window. It uses these settings and these sign-ins, and what it downloads shows in the library.", .{ .size = 11, .color = p.dim, .wrap = true });
-    const code = ui.div(c).wFull().p(8).rounded(6).bg(p.paper);
-    defer code.end();
-    ui.text(c, "nanodown get https://youtu.be/… -q 1080 -o ~/Movies", .{ .size = 11, .mono = true, .color = p.ink, .truncate = .ellipsis });
+    // The command sits in its own well, and the button is outside it: a
+    // `defer` that ends the box at the function's end would draw the button
+    // inside the well, which reads as part of the command.
+    {
+        const code = ui.div(c).wFull().p(8).rounded(6).bg(p.paper);
+        defer code.end();
+        ui.text(c, "nanodown get https://youtu.be/… -q 1080 -o ~/Movies", .{ .size = 11, .mono = true, .color = p.ink, .truncate = .ellipsis });
+    }
+    // Its own row with air above it, so the action is told from the text.
+    const act = ui.div(c).row().pt(8);
+    defer act.end();
     if (ui.button(c, "Install the nanodown command", .{ .variant = .secondary, .size = 12 }).clicked) {
         a.say("Put it in /usr/local/bin, or link it from ~/.local/bin", c);
     }
