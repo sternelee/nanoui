@@ -12,17 +12,21 @@ const license = @import("model/license.zig");
 const tabs = [_][]const u8{ "General", "Formats", "Network", "Browser", "Command Line", "License" };
 
 pub fn draw(a: *App, c: *ui.Context, p: *const theme.Palette) void {
-    // The scrim covers the window and takes the click that closes it. It is
-    // fixed, so it is placed from the window's own corner rather than laid
-    // out by a parent.
-    const back = ui.div(c).fixed().offset(0, 0).size(c.size.w, c.size.h).bg(p.scrim);
-    const back_it = back.interaction();
-    defer back.end();
-    if (back_it.clicked) {
+    // Escape closes, and so does the cross in the head. A click on the scrim
+    // does not: the panel is where settings are typed, and a stray click
+    // past the card used to throw away a half-filled field. The scrim still
+    // takes the click, so it never reaches the list behind it.
+    if (c.input.key == .escape) {
         a.show_settings = false;
+        a.save();
         c.changed = true;
         return;
     }
+    // The scrim covers the window. It is fixed, so it is placed from the
+    // window's own corner rather than laid out by a parent.
+    const back = ui.div(c).fixed().offset(0, 0).size(c.size.w, c.size.h).bg(p.scrim);
+    _ = back.interaction();
+    defer back.end();
 
     // The card is centered by hand: a fixed box is not laid out by its
     // parent, so `itemsCenter` on a wrapper would not move it.
