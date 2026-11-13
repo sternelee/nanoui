@@ -13,6 +13,7 @@ const job = @import("engine/job.zig");
 const mux_write = @import("engine/mux_write.zig");
 const subscription = @import("model/subscription.zig");
 const now = @import("now.zig");
+const version = @import("build_options").version;
 
 const usage =
     \\nanodown — download videos and audio from the web
@@ -47,6 +48,10 @@ pub fn run(init: std.process.Init, args: []const []const u8) !u8 {
         json = true;
     };
 
+    if (std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-V")) {
+        try out(init, "nanodown {s}\n", .{if (version.len > 0) version else "dev"});
+        return 0;
+    }
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help")) {
         try std.Io.File.stdout().writeStreamingAll(init.io, usage);
         return 0;
@@ -509,7 +514,9 @@ fn mcpAnswer(gpa: std.mem.Allocator, line: []const u8) ![]u8 {
     if (std.mem.eql(u8, method, "initialize")) {
         try out_buf.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
         try writeValue(gpa, &out_buf, id);
-        try out_buf.appendSlice(gpa, ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"nanodown\",\"version\":\"0.1.0\"}}}");
+        try out_buf.appendSlice(gpa, ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"nanodown\",\"version\":");
+        try writeJsonString(gpa, &out_buf, if (version.len > 0) version else "dev");
+        try out_buf.appendSlice(gpa, "}}}");
         return out_buf.toOwnedSlice(gpa);
     }
     if (std.mem.eql(u8, method, "tools/list")) {

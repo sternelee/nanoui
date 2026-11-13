@@ -89,6 +89,20 @@ docs/shots/           the screenshots below
 | ![the library](docs/shots/library.png) | ![a link read](docs/shots/preview.png) |
 | ![settings](docs/shots/settings.png) | ![subscriptions](docs/shots/subscriptions.png) |
 
+## Packaging
+
+    VERSION=0.1.0 sh macos/package.sh
+
+Builds `nanodown.app` and `nanodown-macos-arm64.dmg` into `zig-out/package`,
+plus the `nanodown-macos-arm64.zip` and `manifest.json` an updater reads. The
+bundle is ad hoc signed unless `CODESIGN_IDENTITY` names a Developer ID, and
+notarized and stapled when `NOTARY_PROFILE` or the App Store Connect key
+variables are also set. macOS 13 on Apple silicon, from the M1 on.
+
+The icon is drawn rather than shipped as a binary: `python3 macos/make-icon.py`
+rewrites `macos/AppIcon.icns` from the same warm charcoal and amber the window
+uses.
+
 ## Tests
 
     zig build test

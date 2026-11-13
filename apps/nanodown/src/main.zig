@@ -60,6 +60,9 @@ fn isFlag(arg: []const u8) bool {
     return std.mem.startsWith(u8, arg, "-");
 }
 
+/// `--help` and `--version` are commands, not flags on a window that was
+/// never asked for: without them the binary would open one.
 fn isHelp(arg: []const u8) bool {
-    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
+    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h") or
+        std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V");
 }
