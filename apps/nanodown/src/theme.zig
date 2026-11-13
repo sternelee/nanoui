@@ -1,6 +1,7 @@
-//! nanodown's colors and measures, read off the site's own stylesheet:
-//! a warm paper in light, a near-black in dark, one hairline rule, and a
-//! single warm accent that is the only saturated color in the window.
+//! nanodown's colors and measures, in nanomon's palette: warm charcoal in
+//! dark and cream in light, amber for what is chosen and for what is
+//! running, rust for what failed, sage for what finished. One hairline rule,
+//! and the amber is the only saturated color in the window.
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 
@@ -29,39 +30,47 @@ pub const Palette = struct {
     good: ui.Color,
     /// A download that failed.
     bad: ui.Color,
+    /// A row that is picked: the accent, let into the ground.
+    selection: ui.Color,
+    /// A progress bar's groove, and a control's own ground.
+    track: ui.Color,
     /// The overlay behind a sheet.
     scrim: ui.Color,
 };
 
 pub const light: Palette = .{
-    .paper = .hex(0xf7f6f3),
-    .raised = .hex(0xffffff),
-    .well = .hex(0xefede8),
-    .rule = .hex(0xe4e2dc),
-    .ink = .hex(0x141414),
-    .dim = .hex(0x7a7975),
-    .faint = .hex(0xa8a6a0),
-    .accent = .hex(0xf4622f),
-    .accent_hover = .hex(0xdd4f1e),
-    .on_accent = .hex(0xffffff),
-    .good = .hex(0x2f9e5f),
-    .bad = .hex(0xd23f3f),
+    .paper = .hex(0xfaf8f3),
+    .raised = .hex(0xf0ece3),
+    .well = .hex(0xe9e3d6),
+    .rule = .hex(0xe4ded1),
+    .ink = .hex(0x1a1813),
+    .dim = .hex(0x6b6557),
+    .faint = .hex(0xa8a090),
+    .accent = .hex(0xc77d20),
+    .accent_hover = .hex(0xa8691a),
+    .on_accent = .hex(0xfffdf8),
+    .good = .hex(0x5c7e47),
+    .bad = .hex(0xb14228),
+    .selection = .hex(0xf1e2cd),
+    .track = .hex(0xebe5d9),
     .scrim = .{ .r = 0, .g = 0, .b = 0, .a = 0.28 },
 };
 
 pub const dark: Palette = .{
-    .paper = .hex(0x111110),
-    .raised = .hex(0x1d1d1c),
-    .well = .hex(0x1a1a19),
-    .rule = .hex(0x262624),
-    .ink = .hex(0xecebe8),
-    .dim = .hex(0x8a8985),
-    .faint = .hex(0x5c5b58),
-    .accent = .hex(0xff6b35),
-    .accent_hover = .hex(0xff8250),
-    .on_accent = .hex(0x141414),
-    .good = .hex(0x4ecb71),
-    .bad = .hex(0xff5f56),
+    .paper = .hex(0x16140f),
+    .raised = .hex(0x1f1c16),
+    .well = .hex(0x191712),
+    .rule = .hex(0x2a271f),
+    .ink = .hex(0xedeae2),
+    .dim = .hex(0x9a9384),
+    .faint = .hex(0x5c564b),
+    .accent = .hex(0xe8a33d),
+    .accent_hover = .hex(0xf2b455),
+    .on_accent = .hex(0x16140f),
+    .good = .hex(0x7fa86b),
+    .bad = .hex(0xd2674f),
+    .selection = .hex(0x403118),
+    .track = .hex(0x221f19),
     .scrim = .{ .r = 0, .g = 0, .b = 0, .a = 0.5 },
 };
 
@@ -98,6 +107,11 @@ pub const metrics = struct {
     pub const radius: f32 = 12;
     pub const thumb_radius: f32 = 8;
 };
+
+/// The fonts, as nanomon names them: Geist for words, JetBrains Mono for
+/// figures. Both fall back to the system's own if they are not installed.
+pub const font = "Geist";
+pub const mono_font = "JetBrains Mono";
 
 /// A size of text, as the site uses them.
 pub const type_scale = struct {

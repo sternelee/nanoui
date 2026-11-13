@@ -28,6 +28,22 @@ pub fn view(a: *App, c: *ui.Context) void {
     c.theme.accent = p.accent;
     c.theme.accent_hover = p.accent_hover;
     c.theme.accent_text = p.on_accent;
+    // nanomon's faces: Geist for words, JetBrains Mono for figures. A
+    // machine without them falls back to the system's own, which is why
+    // these are names and not paths.
+    c.theme.font = theme.font;
+    c.theme.mono_font = theme.mono_font;
+    // The rest of the framework's palette, so its own widgets (a divider, a
+    // scrollbar, a caret) sit in the same warm ground as the app's.
+    c.theme.background = p.paper;
+    c.theme.surface = p.raised;
+    c.theme.surface_hover = p.well;
+    c.theme.text = p.ink;
+    c.theme.muted = p.dim;
+    c.theme.border = p.rule;
+    c.theme.track = p.well;
+    c.theme.danger = p.bad;
+    c.theme.success = p.good;
     a.now = @import("now.zig").ms();
     // A row asked to go last frame goes now, before this one is walked: the
     // list is drawn from indices worked out up front, so an item taken out
@@ -74,7 +90,9 @@ fn topBar(a: *App, c: *ui.Context, p: *const theme.Palette) void {
     // are the bar's children and not the field's: a `defer` that ends the
     // field at the function's end would draw them inside its border.
     {
-        const field = ui.div(c).grow().row().itemsCenter().gap(8).h(34).px(11).rounded(9).bg(p.raised).border(p.rule).borderW(1);
+        // nanomon's control fill, one step above the ground: a field the same
+        // tone as the page behind it does not read as something to type in.
+        const field = ui.div(c).grow().row().itemsCenter().gap(8).h(34).px(11).rounded(9).bg(p.track).border(p.rule).borderW(1);
         defer field.end();
         // Reading a link is a network round trip, and the icon says so: a
         // magnifier over a field that is not searching is a small lie, and
@@ -135,12 +153,18 @@ fn tabs(a: *App, c: *ui.Context, p: *const theme.Palette) void {
         for (names, 0..) |name, i| {
             const on = a.tab == i;
             var t = ui.div(c).row().itemsCenter().gap(6).px(10).h(26).rounded(7).control();
-            t = if (on) t.bg(p.raised).border(p.rule).borderW(1) else t.hover(p.well);
+            // The chosen tab is solid amber, as nanomon's picked item is: a
+            // tinted chip on a warm ground is too quiet to read as a choice.
+            t = if (on) t.bg(p.accent) else t.hover(p.well);
             const it = t.interaction();
             defer t.end();
-            ui.text(c, name, .{ .size = 13, .weight = if (on) .medium else .regular, .color = if (on) p.ink else p.dim });
+            ui.text(c, name, .{ .size = 13, .weight = if (on) .medium else .regular, .color = if (on) p.on_accent else p.dim });
             if (i == 0 and a.lib.running() > 0) {
-                ui.text(c, c.print("{d}", .{a.lib.running()}), .{ .size = 11, .color = p.accent, .tabular = true });
+                ui.text(c, c.print("{d}", .{a.lib.running()}), .{
+                    .size = 11,
+                    .color = if (on) p.on_accent else p.accent,
+                    .tabular = true,
+                });
             }
             if (it.clicked and !on) {
                 a.tab = i;

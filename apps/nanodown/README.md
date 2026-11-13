@@ -77,7 +77,7 @@ src/engine/           http, hls, dash, extract, page, mux, job, capture
 src/capture_flow.zig  the hidden player, its media requests, the formats it named
 src/store.zig         the state files, and the string work a file name needs
 src/cli.zig           the command
-src/theme.zig         the palette, light and dark, read off downbit.app
+src/theme.zig         the palette, light and dark, in nanomon's warm ground
 src/tests.zig         every module's tests, through ui.Tester for the views
 docs/shots/           the screenshots below
 ```

@@ -51,10 +51,12 @@ fn side(a: *App, c: *ui.Context, p: *const theme.Palette) void {
     for (tabs, 0..) |name, i| {
         const on = a.settings_tab == i;
         var item = ui.div(c).row().itemsCenter().h(28).px(9).rounded(6).control();
-        item = if (on) item.bg(p.raised) else item.hover(p.rule);
+        // Solid amber for the section in front, as nanomon picks a sidebar
+        // item: on a warm well a lighter chip is nearly invisible.
+        item = if (on) item.bg(p.accent) else item.hover(p.rule);
         const it = item.interaction();
         defer item.end();
-        ui.text(c, name, .{ .size = 12, .weight = if (on) .medium else .regular, .color = if (on) p.ink else p.dim });
+        ui.text(c, name, .{ .size = 12, .weight = if (on) .medium else .regular, .color = if (on) p.on_accent else p.dim });
         if (it.clicked and !on) {
             a.settings_tab = i;
             c.changed = true;

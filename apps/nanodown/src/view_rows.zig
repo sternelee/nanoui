@@ -12,8 +12,11 @@ const thumbs = @import("thumbs.zig");
 pub fn draw(a: *App, c: *ui.Context, p: *const theme.Palette, d: *download.Download, index: usize) void {
     ui.key(c, c.print("row-{d}", .{d.id}));
     const picked = a.lib.selected != null and a.lib.selected.? == index;
-    var row = ui.div(c).wFull().h(theme.metrics.row_h).row().itemsCenter().gap(12).px(10).rounded(theme.metrics.radius).control();
-    row = if (picked) row.bg(p.well).border(p.rule).borderW(1) else row.hover(p.well);
+    // Each download is a card on the ground, as nanomon's rows are: a
+    // hairline and a raised fill, so a list of them reads as objects rather
+    // than as text floating on the page.
+    var row = ui.div(c).wFull().h(theme.metrics.row_h).row().itemsCenter().gap(12).px(10).rounded(theme.metrics.radius).bg(p.raised).border(p.rule).borderW(1).control();
+    row = if (picked) row.bg(p.selection).border(p.accent) else row.hover(p.well);
     const it = row.interaction();
     defer row.end();
     if (it.clicked) {
@@ -85,7 +88,7 @@ fn tryDup(c: *ui.Context, text: []const u8) []const u8 {
 /// stops matching it the moment the window is wider than the number assumed.
 /// A paused bar is grey: an orange one reads as still running.
 fn progressBar(c: *ui.Context, p: *const theme.Palette, d: *const download.Download) void {
-    const track = ui.div(c).wFull().h(3).rounded(2).bg(p.well).clip();
+    const track = ui.div(c).wFull().h(3).rounded(2).bg(p.track).clip();
     defer track.end();
     const w = (track.interaction().rect orelse ui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 }).w;
     const f = d.fraction();
