@@ -1,0 +1,8 @@
+.{
+    .name = .proto,
+    .version = "0.1.0",
+    .fingerprint = 0x2b1333e312dd3769,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{ .nanoui = .{ .path = "../../.." } },
+    .paths = .{""},
+}

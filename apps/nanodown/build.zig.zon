@@ -1,0 +1,16 @@
+.{
+    .name = .nanodown,
+    .version = "0.1.0",
+    .fingerprint = 0x99a5eb20cec92761,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .nanoui = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "PRD.md",
+        "README.md",
+    },
+}
