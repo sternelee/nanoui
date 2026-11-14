@@ -22,7 +22,6 @@ test {
     _ = @import("capture_flow.zig");
     _ = @import("engine/job.zig");
     _ = @import("thumbs.zig");
-    _ = @import("cli.zig");
     _ = @import("app.zig");
     _ = @import("view.zig");
     _ = @import("view_rows.zig");

@@ -1,12 +1,10 @@
 # nanodown
 
 A desktop video and audio downloader in Zig, on nanoui's native UI. A link in,
-a file out: the same binary is the window and the command, as downbit's is.
+a file out.
 
     zig build
-    zig-out/bin/nanodown                       # the window
-    zig-out/bin/nanodown get <url> -o ~/Movies # the command
-    zig-out/bin/nanodown --help
+    zig-out/bin/nanodown
 
 The full specification it was built to is in [PRD.md](PRD.md).
 
@@ -18,10 +16,6 @@ Return downloads. The library below lists what is running and what is done, with
 a bar that takes the picture's own colour as it fills, and tabs for All, Videos,
 Audio, Failed and Subscriptions. ⌘F searches the titles, ⌘1–⌘4 pick a tab,
 ⌘⇧K clears what finished, ⌘, opens the settings.
-
-**The command.** `get`, `info`, `formats`, `list`, `subs`, `settings`, `sites`,
-`open`. Every one takes `--json`. It reads the app's own settings and library,
-so what it downloads shows in the window.
 
 **The engine.** No yt-dlp, no FFmpeg, no Python. Pages are read for the formats
 they declare; a link that is itself a master playlist is read for its
@@ -69,18 +63,26 @@ never holds one whose Download button would fail.
 ## Layout
 
 ```
-src/main.zig          the entry: arguments mean the command, none means the window
+src/main.zig          the entry: the window, and a link handed to it
 src/app.zig           the app's state: library, settings, licence, the queue
 src/view*.zig         the window: the field and list, a row, the preview, settings
 src/model/            media, download, library, settings, subscription, licence
-src/engine/           http, hls, dash, extract, page, mux, job, capture
+src/engine/           http, hls, dash, extract, sites, page, mux, job, capture
 src/capture_flow.zig  the hidden player, its media requests, the formats it named
 src/store.zig         the state files, and the string work a file name needs
-src/cli.zig           the command
 src/theme.zig         the palette, light and dark, in nanomon's warm ground
 src/tests.zig         every module's tests, through ui.Tester for the views
 docs/shots/           the screenshots below
 ```
+
+## Checking a site
+
+    zig build probe -- <url>              # what the engine made of a link
+    zig build probe -- <url> --get /tmp   # and the best format, downloaded
+
+`nanodown-probe` is not part of the app. It reads one link and prints the
+formats it found, which is how each site was checked: a list of URLs proves the
+page was read, and a file on disk proves the stream can be taken.
 
 ## Screenshots
 

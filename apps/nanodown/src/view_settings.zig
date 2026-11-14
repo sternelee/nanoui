@@ -9,7 +9,7 @@ const App = @import("app.zig").App;
 const settings = @import("model/settings.zig");
 const license = @import("model/license.zig");
 
-const tabs = [_][]const u8{ "General", "Formats", "Network", "Browser", "Command Line", "License" };
+const tabs = [_][]const u8{ "General", "Formats", "Network", "Browser", "License" };
 
 pub fn draw(a: *App, c: *ui.Context, p: *const theme.Palette) void {
     // Escape closes, and so does the cross in the head. A click on the scrim
@@ -84,7 +84,7 @@ fn head(a: *App, c: *ui.Context, p: *const theme.Palette) void {
 fn body(a: *App, c: *ui.Context, p: *const theme.Palette) void {
     const area = ui.div(c).grow().wFull().column().gap(2).p(16).scrollY().scrollbar(.{ .overlay = p.faint });
     defer area.end();
-    if (a.settings_tab == 5) {
+    if (a.settings_tab == 4) {
         licence(a, c, p);
         return;
     }
@@ -92,14 +92,12 @@ fn body(a: *App, c: *ui.Context, p: *const theme.Palette) void {
         0 => .general,
         1 => .formats,
         2 => .network,
-        3 => .browser,
-        else => .command_line,
+        else => .browser,
     };
     for (settings.all) |s| {
         if (s.tab != tab) continue;
         settingRow(a, c, p, s);
     }
-    if (tab == .command_line) commandLine(a, c, p);
     if (tab == .general) whereKept(a, c, p);
     // Room under the last row, so a scrolled-to-the-end tab does not end with
     // a line sliced by the card's own edge.
@@ -284,27 +282,6 @@ fn licence(a: *App, c: *ui.Context, p: *const theme.Palette) void {
         };
         a.save();
         a.say("Pro is on", c);
-    }
-}
-
-fn commandLine(a: *App, c: *ui.Context, p: *const theme.Palette) void {
-    const box = ui.div(c).wFull().column().gap(6).p(10).rounded(8).bg(p.well);
-    defer box.end();
-    ui.text(c, "The nanodown command", .{ .size = 12, .weight = .medium, .color = p.ink });
-    ui.text(c, "The app is the command: with arguments it runs them, without it opens the window. It uses these settings and these sign-ins, and what it downloads shows in the library.", .{ .size = 11, .color = p.dim, .wrap = true });
-    // The command sits in its own well, and the button is outside it: a
-    // `defer` that ends the box at the function's end would draw the button
-    // inside the well, which reads as part of the command.
-    {
-        const code = ui.div(c).wFull().p(8).rounded(6).bg(p.paper);
-        defer code.end();
-        ui.text(c, "nanodown get https://youtu.be/… -q 1080 -o ~/Movies", .{ .size = 11, .mono = true, .color = p.ink, .truncate = .ellipsis });
-    }
-    // Its own row with air above it, so the action is told from the text.
-    const act = ui.div(c).row().pt(8);
-    defer act.end();
-    if (ui.button(c, "Install the nanodown command", .{ .variant = .secondary, .size = 12 }).clicked) {
-        a.say("Put it in /usr/local/bin, or link it from ~/.local/bin", c);
     }
 }
 

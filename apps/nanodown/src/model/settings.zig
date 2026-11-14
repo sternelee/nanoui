@@ -28,7 +28,7 @@ pub const Setting = struct {
     /// The default, as text.
     default: []const u8 = "",
 
-    pub const Tab = enum { general, formats, network, browser, command_line, license };
+    pub const Tab = enum { general, formats, network, browser, license };
 };
 
 /// The whole table, in the order the docs list them.
@@ -74,10 +74,6 @@ pub const all = [_]Setting{
 
     // Browser.
     .{ .key = "browser_signins", .label = "Use the browser's sign-ins", .tab = .browser, .kind = .flag, .default = "true" },
-
-    // Command line.
-    .{ .key = "cli_installed", .label = "The nanodown command", .tab = .command_line, .kind = .flag, .default = "false" },
-    .{ .key = "mcp_enabled", .label = "AI agents", .tab = .command_line, .kind = .flag, .default = "false" },
 };
 
 /// The keys of the settings that take a typed value, in the order the app

@@ -7,7 +7,10 @@ const hls = @import("hls.zig");
 const dash = @import("dash.zig");
 const extract = @import("extract.zig");
 
-pub fn expandHls(gpa: std.mem.Allocator, base: []const u8, manifest_url: []const u8, out: *std.ArrayList(media.Format)) !void {
+/// `kind` is what the manifest holds: a track's playlist is audio, and a
+/// video's is video. The variants of a master carry the same kind, because a
+/// master lists renditions of one thing.
+pub fn expandHls(gpa: std.mem.Allocator, base: []const u8, manifest_url: []const u8, kind: media.Format.Kind, out: *std.ArrayList(media.Format)) !void {
     var r = extract.fetch(gpa, manifest_url, base);
     defer r.deinit();
     if (r.status() == 0 or r.body().len == 0) return;
@@ -22,7 +25,7 @@ pub fn expandHls(gpa: std.mem.Allocator, base: []const u8, manifest_url: []const
             .label = try gpa.dupe(u8, "Auto"),
             .ext = try gpa.dupe(u8, "mp4"),
             .manifest = .{ .hls = try gpa.dupe(u8, manifest_url) },
-            .kind = .video,
+            .kind = kind,
             .duration = p.duration(),
         });
         return;
@@ -33,7 +36,7 @@ pub fn expandHls(gpa: std.mem.Allocator, base: []const u8, manifest_url: []const
             .label = try gpa.dupe(u8, v.label),
             .ext = try gpa.dupe(u8, "mp4"),
             .manifest = .{ .hls = try gpa.dupe(u8, v.url) },
-            .kind = .video,
+            .kind = kind,
             .width = v.width,
             .height = v.height,
             .bitrate = v.bandwidth,

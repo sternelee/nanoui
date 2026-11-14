@@ -27,6 +27,18 @@ pub fn build(b: *std.Build) void {
     run.addPassthruArgs();
     b.step("run", "Run nanodown").dependOn(&run.step);
 
+    // A link read by hand, for checking a site: `zig build probe -- <url>`.
+    const probe = b.addExecutable(.{ .name = "nanodown-probe", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/probe.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "nanoui", .module = nanoui }},
+    }) });
+    b.installArtifact(probe);
+    const probe_run = b.addRunArtifact(probe);
+    probe_run.addPassthruArgs();
+    b.step("probe", "Read one link and print what the engine made of it").dependOn(&probe_run.step);
+
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = target,
