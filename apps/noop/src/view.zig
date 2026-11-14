@@ -26,8 +26,9 @@ const red: ui.Color = .hex(0xf87171);
 const amber: ui.Color = .hex(0xfbbf24);
 const violet: ui.Color = .hex(0xa78bfa);
 
-/// The corner radius of the island's shape: the notch's own, so the
-/// island reads as extruded from the screen rather than laid on it.
+/// The bottom's corner radius: the notch's own, so the island reads as
+/// extruded from the screen rather than laid on it. The top is square,
+/// cut straight from the screen's top edge.
 const shape_r: f32 = 16;
 
 pub fn view(self: *app_state.State, c: *ui.Context) void {
@@ -52,15 +53,14 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
     });
     const iw = f.width orelse closed;
     const ih = f.height orelse self.row_h;
-    // The island's shape is its own background: one rounded rectangle, the
-    // top corners' arcs leaving the screen's top edge as a smooth curve
-    // where the menu bar shows through, the bottom's as the capsule's.
-    // Drawn as a child would double the corners.
+    // The island's shape: square along the screen's top edge, rounded
+    // only underneath — a square piece over a same-colored capsule,
+    // their overlap hiding the capsule's upper rounding.
     const isle = ui.div(c).absolute().offset((c.size.w - iw) / 2, 0).row().itemsCenter().clip().control().motion(f)
-        .scaleAnchor(0.5, 0)
-        .rounded(shape_r)
-        .bg(dark);
+        .scaleAnchor(0.5, 0);
     defer isle.end();
+    ui.div(c).absolute().offset(0, 0).wFull().h(ih - shape_r).bg(dark).end();
+    ui.div(c).absolute().offset(0, ih - 2 * shape_r).wFull().h(2 * shape_r).roundedFull().bg(dark).end();
     // Open: the pointer is on it, something is waiting, or a run is going.
     self.hover_panel = isle.hovered();
     // Resting (near enough: springs settle asymptotically) and closed:
@@ -86,11 +86,12 @@ pub fn view(self: *app_state.State, c: *ui.Context) void {
 /// it open, and at rest the two draw the same pixels in the same place,
 /// so the handoff in either direction is nothing to see.
 pub fn capsule(self: *app_state.State, c: *ui.Context) void {
-    // The same shape the panel draws at rest, pixel for pixel: one rounded
-    // rectangle, the top corners leaving a smooth curve where the island
-    // meets the screen's top edge.
-    const root = ui.div(c).absolute().wFull().hFull().row().itemsCenter().clip().control().rounded(shape_r).bg(dark);
+    // The same shape the panel draws at rest, pixel for pixel: square along
+    // the screen's top edge, rounded only underneath.
+    const root = ui.div(c).absolute().wFull().hFull().row().itemsCenter().clip().control();
     defer root.end();
+    ui.div(c).absolute().offset(0, 0).wFull().h(c.size.h - shape_r).bg(dark).end();
+    ui.div(c).absolute().offset(0, c.size.h - 2 * shape_r).wFull().h(2 * shape_r).roundedFull().bg(dark).end();
     self.hover_capsule = root.hovered();
     const pad = ui.div(c).column().px(14).pt(8).sizeFull();
     defer pad.end();
