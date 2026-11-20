@@ -5,6 +5,7 @@ const w = @import("win32.zig");
 const App = @import("app.zig").App;
 const Surface = @import("surface.zig").Surface;
 const window_types = @import("../window_types.zig");
+const page_request = @import("../page_request.zig");
 const Page = @import("../page_webview2.zig").Page;
 const drop_files = @import("drop_files.zig");
 const iconFrame = @import("icon.zig").iconFrame;
@@ -34,6 +35,13 @@ const ui = @import("../ui/ui.zig");
 
 pub const Asset = window_types.Asset;
 pub const PageOptions = window_types.PageOptions;
+pub const PageHeader = window_types.PageHeader;
+pub const PageRequest = window_types.PageRequest;
+pub const PageDropDecision = window_types.PageDropDecision;
+pub const PageDropPhase = window_types.PageDropPhase;
+pub const PageDropOffer = window_types.PageDropOffer;
+pub const PageDropEvent = window_types.PageDropEvent;
+pub const PageFileDrop = window_types.PageFileDrop;
 pub const Content = window_types.Content;
 pub const TitleBar = window_types.TitleBar;
 pub const Callback = window_types.Callback(Window);
@@ -130,6 +138,9 @@ pub const Window = struct {
         var ex: u32 = 0;
         if (options.skip_taskbar) ex |= w.WS_EX_TOOLWINDOW;
         if (options.opacity < 1 or self.transparent) ex |= w.WS_EX_LAYERED;
+        // Topmost at birth: asking for it later (`SetWindowPos`) is demoted
+        // for a background process, a style it was created with never is.
+        if (options.always_on_top) ex |= w.WS_EX_TOPMOST;
         const hwnd = w.CreateWindowExW(ex, class_name, w.wide(&title, options.title), style, w.CW_USEDEFAULT, w.CW_USEDEFAULT, 100, 100, null, null, inst, null) orelse return error.CreateWindow;
         self.hwnd = hwnd;
         // The title bar matches the theme before the window is first shown; a
@@ -438,6 +449,17 @@ pub const Window = struct {
         const h = self.hwnd orelse return;
         const topmost: isize = if (on) -1 else -2;
         _ = w.SetWindowPos(h, @ptrFromInt(@as(usize, @bitCast(topmost))), 0, 0, 0, 0, 0x0001 | 0x0002);
+        // The call only *asks*: Windows demotes a background process — it
+        // succeeds, the window goes as high as it may, and the style stays as
+        // it was. The style itself is set directly: a style change is not a
+        // z-order change, so it is never demoted.
+        const ex = w.GetWindowLongPtrW(h, w.GWL_EXSTYLE);
+        const has = ex & w.WS_EX_TOPMOST != 0;
+        if (has == on) return;
+        const next = if (on) ex | w.WS_EX_TOPMOST else ex & ~@as(isize, w.WS_EX_TOPMOST);
+        _ = w.SetWindowLongPtrW(h, w.GWL_EXSTYLE, next);
+        // A frame changed, nothing moved or reordered: the style above takes.
+        _ = w.SetWindowPos(h, null, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
     }
 
     pub fn isFullScreen(self: *Window) bool {
@@ -496,6 +518,13 @@ pub const Window = struct {
     /// absolute `http(s)://` one. No effect on a native-UI window.
     pub fn setPageUrl(self: *Window, url: []const u8) void {
         if (self.page) |p| p.load(url);
+    }
+
+    /// Starts an explicit GET navigation with optional per-request headers.
+    pub fn loadPageRequest(self: *Window, req: PageRequest) page_request.Error!void {
+        if (self.closed) return error.NoPage;
+        const p = self.page orelse return error.NoPage;
+        return p.loadRequest(req);
     }
 
     /// Shows entry `i` of `PageOptions.pages` (the bar's buttons).

@@ -42,17 +42,21 @@ pub fn hasMatrix(i: *const Instance) bool {
 
 /// The clip rectangle's corners rounded by `radius`: those in `corners`
 /// (1 top left, 2 top right, 4 bottom right, 8 bottom left), packed in one
-/// float as the shader reads it.
+/// float as the shader reads it. Negative radius keeps circular corners,
+/// positive radius keeps the continuous corner shape.
 pub fn clipRound(radius: f32, corners: u4) f32 {
-    if (corners == 0 or radius <= 0) return 0;
-    return @as(f32, @floatFromInt(corners)) * 4096 + @min(radius, 4095);
+    if (corners == 0 or radius == 0) return 0;
+    const packed_radius = @as(f32, @floatFromInt(corners)) * 4096 + @min(@abs(radius), 4095);
+    return if (radius < 0) -packed_radius else packed_radius;
 }
 
 /// `clipRound` unpacked: the radius and the corners.
 pub fn clipCorners(v: f32) struct { radius: f32, corners: u4 } {
-    if (v <= 0) return .{ .radius = 0, .corners = 0 };
-    const m = @floor(v / 4096);
-    return .{ .radius = v - m * 4096, .corners = @intFromFloat(m) };
+    if (v == 0) return .{ .radius = 0, .corners = 0 };
+    const magnitude = @abs(v);
+    const m = @floor(magnitude / 4096);
+    const radius = magnitude - m * 4096;
+    return .{ .radius = if (v < 0) -radius else radius, .corners = @intFromFloat(m) };
 }
 
 pub const Kind = struct {
@@ -65,6 +69,7 @@ pub const Kind = struct {
     /// `color` its tint, `uv` its bezel, refraction, opacity and rim width,
     /// `border_color` its tone (low, high, curve, saturation), and
     /// `border_width` the blur of what shows through, all in points.
+    /// Sidebar: uv.x = -1, uv.y = edge fade, uv.w = reflection strength.
     pub const glass: f32 = 4;
     /// A shadow drawn outside its box only (`Shadow.knockout`): what is
     /// under the box shows through it. `uv`'s x, y: where the box is from
@@ -92,6 +97,33 @@ pub const Kind = struct {
     /// fill: what's under the frame (a map) shows there.
     pub const hole: f32 = 12;
 };
+
+/// The matching end of a grouped subtree, including nested masks. A
+/// malformed stream cannot accidentally consume the remainder of a frame.
+pub fn groupEnd(instances: []const Instance, begin: usize) ?usize {
+    if (begin >= instances.len or instances[begin].kind != Kind.layer_begin) return null;
+    var depth: usize = 1;
+    var at = begin + 1;
+    while (at < instances.len) : (at += 1) {
+        if (instances[at].kind == Kind.layer_begin) depth += 1;
+        if (instances[at].kind == Kind.layer_end) {
+            depth -= 1;
+            if (depth == 0) return at;
+        }
+    }
+    return null;
+}
+
+test "scroll fade groups match nested ends without changing the instance ABI" {
+    const begin: Instance = .{ .rect = .{ 0, 0, 10, 10 }, .color = .{ 1, 1, 1, 1 }, .kind = Kind.layer_begin };
+    var end = begin;
+    end.kind = Kind.layer_end;
+    const nested = [_]Instance{ begin, begin, end, end };
+    try std.testing.expectEqual(@as(?usize, 3), groupEnd(&nested, 0));
+    try std.testing.expectEqual(@as(?usize, 2), groupEnd(&nested, 1));
+    try std.testing.expectEqual(@as(?usize, null), groupEnd(nested[0..3], 0));
+    try std.testing.expectEqual(@as(?usize, null), groupEnd(&nested, 2));
+}
 
 /// A texture's linear map (`Kind.texture` with `border_color` set, from
 /// `ui.textureAffine`): its 2×2 matrix (row major) after its turn by
@@ -172,10 +204,93 @@ pub const Texture = struct {
     /// LUT (`ui.lut`), both on display-encoded colour.
     source_lut: ?Lut = null,
     lut: ?Lut = null,
+    /// What an RGB texture's values already are (`Encoding`). `.auto`, the
+    /// default, draws it as every field above says, as before.
+    encoding: Encoding = .auto,
 
-    /// Whether the colour stage must run before the frame is drawn.
+    /// Whether the colour stage must run before the frame is drawn on a
+    /// surface showing `colour`: a `.surface_linear` texture is drawn as
+    /// it is on an extended one.
+    pub fn needsPostOn(t: Texture, colour: SurfaceColour) bool {
+        if (colour == .extended_linear and t.effectiveEncoding() == .surface_linear) return false;
+        return t.needsPost();
+    }
+
+    /// Whether the colour stage must run before the frame is drawn on an
+    /// SDR surface.
     pub fn needsPost(t: Texture) bool {
-        return t.format != .bgra8 or t.lut != null or t.source_lut != null;
+        return switch (t.effectiveEncoding()) {
+            .auto => t.format != .bgra8 or t.lut != null or t.source_lut != null,
+            .display_sdr => false,
+            .surface_linear => true,
+        };
+    }
+
+    /// `encoding`, or `.auto` for a Y'CbCr format: its range, matrix and
+    /// transfer say what its codes are, whatever `encoding` says.
+    pub fn effectiveEncoding(t: Texture) Encoding {
+        return switch (t.format) {
+            .bgra8, .rgba16f => t.encoding,
+            .ycbcr420_8, .ycbcr420_10, .ycbcr422_10, .ycbcr444_10 => .auto,
+        };
+    }
+};
+
+/// What an app's RGB texture holds, for an app that does its own colour
+/// management (`Texture.encoding`). Anything but `.auto` passes the frame
+/// through: `transfer`, `tone_map` and both LUTs are ignored.
+pub const Encoding = enum {
+    /// As `format`, `transfer`, `tone_map` and the LUTs say.
+    auto,
+    /// Already encoded for this surface (display sRGB on an SDR one),
+    /// premultiplied: sampled as stored, alpha included, whatever its pixel
+    /// format (BGRA8, RGBA16F, RGB10A2, or an sRGB one, whose decoded
+    /// samples are encoded again).
+    display_sdr,
+    /// Linear light in Rec. 709 primaries, SDR white at 1.0, values above
+    /// it kept: never tone mapped. An SDR surface shows it clamped to
+    /// [0, 1] and sRGB encoded (the colour stage's source mode 4), its
+    /// alpha kept.
+    surface_linear,
+};
+
+/// What a window's surface shows its pixels as (`Surface.setColour`):
+/// display sRGB in 8 bits (every surface, by default), or extended-range
+/// linear light in half floats (SDR white at `DisplayInfo.sdr_white_scale`,
+/// brighter values kept, on a display with headroom). An extended surface
+/// still draws the UI in 8-bit sRGB and composites it, decoded, with the
+/// `.surface_linear` textures it shows: nothing else changes for the app.
+pub const SurfaceColour = enum { sdr_srgb, extended_linear };
+
+/// What the display under a surface can show, as the surface last read it.
+/// The defaults describe an SDR display, which is what a surface that can't
+/// tell (offscreen, OpenGL, the CPU renderer) reports.
+pub const DisplayInfo = struct {
+    /// How far above SDR white the display can go now, and at most: 1 on
+    /// an SDR display. On macOS `headroom_now` stays 1 until a surface asks
+    /// for extended range (EDR), and moves with the brightness.
+    headroom_now: f32 = 1,
+    headroom_potential: f32 = 1,
+    /// SDR white and the display's peak, in nits (Windows reports both; on
+    /// macOS SDR white is taken as 100 and the peak as 100 × the potential
+    /// headroom).
+    sdr_white_nits: f32 = 100,
+    max_nits: f32 = 100,
+    /// The output is HDR (macOS: the display has headroom; Windows: the
+    /// output's colour space is HDR10), and the display's gamut is wider
+    /// than sRGB (Display P3 or more).
+    hdr_output: bool = false,
+    wide_gamut: bool = false,
+    /// The value an extended surface draws SDR white at, which the UI is
+    /// scaled by and a `.surface_linear` texture's SDR white should be
+    /// written at: 1 on macOS (EDR's 1.0 is SDR white), SDR white over 80
+    /// nits on Windows (scRGB's 1.0 is 80 nits).
+    sdr_white_scale: f32 = 1,
+
+    /// Whether an extended surface can show anything brighter than SDR
+    /// white here.
+    pub fn hasHeadroom(d: DisplayInfo) bool {
+        return d.hdr_output and d.headroom_potential > 1.0;
     }
 };
 

@@ -35,6 +35,7 @@ pub const Api = struct {
     glUniform1i: *const fn (at: i32, v: i32) callconv(.c) void,
     glUniform1f: *const fn (at: i32, v: f32) callconv(.c) void,
     glUniform2f: *const fn (at: i32, x: f32, y: f32) callconv(.c) void,
+    glUniform4f: *const fn (at: i32, x: f32, y: f32, z: f32, w: f32) callconv(.c) void,
     glUniform2i: *const fn (at: i32, x: i32, y: i32) callconv(.c) void,
     glUniform4i: *const fn (at: i32, x: i32, y: i32, z: i32, w: i32) callconv(.c) void,
     glGenVertexArrays: *const fn (n: i32, out: *u32) callconv(.c) void,
@@ -72,8 +73,8 @@ var loaded: enum { none, gl, es } = .none;
 /// Loads OpenGL's functions; false when it is not installed.
 pub fn load() bool {
     if (loaded == .gl) return true;
-    const lib = std.c.dlopen("libOpenGL.so.0", .{ .NOW = true }) orelse
-        std.c.dlopen("libGL.so.1", .{ .NOW = true }) orelse return false;
+    const lib = std.c.dlopen("libOpenGL.so.0", .{ .LAZY = true }) orelse
+        std.c.dlopen("libGL.so.1", .{ .LAZY = true }) orelse return false;
     if (!from(lib)) return false;
     loaded = .gl;
     return true;
@@ -83,7 +84,7 @@ pub fn load() bool {
 pub fn loadEs() bool {
     if (loaded == .es) return true;
     const name = if (builtin.abi.isAndroid()) "libGLESv3.so" else "libGLESv2.so.2";
-    const lib = std.c.dlopen(name, .{ .NOW = true }) orelse return false;
+    const lib = std.c.dlopen(name, .{ .LAZY = true }) orelse return false;
     if (!from(lib)) return false;
     loaded = .es;
     return true;

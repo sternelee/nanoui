@@ -156,3 +156,78 @@ test "a slider is named by the text before it and steps a tenth" {
     t.frame();
     try testing.expectApproxEqAbs(@as(f32, 0.6), s.v, 0.001);
 }
+
+const Login = struct {
+    name: ui.TextBuffer = .{},
+    secret: ui.TextBuffer = .{},
+    fn view(l: *Login, c: *ui.Context) void {
+        ui.column(c, .{ .gap = 8, .padding = .all(8) });
+        defer ui.end(c);
+        _ = ui.textField(c, &l.name, .{ .placeholder = "Name" });
+        _ = ui.textField(c, &l.secret, .{ .placeholder = "Password", .password = true });
+    }
+};
+
+test "a password field's text isn't told to a screen reader, a plain field's is" {
+    var l: Login = .{};
+    l.name.set("ada");
+    l.secret.set("hunter2");
+    var t: ui.Tester = undefined;
+    try t.init(testing.allocator, .init(&l, Login.view), .{});
+    defer t.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const els = try elements(&t, arena.allocator());
+    try testing.expectEqual(@as(usize, 2), els.len);
+    try testing.expectEqual(access.Role.text_field, els[0].role);
+    try testing.expectEqualStrings("ada", els[0].value);
+    try testing.expectEqual(access.Role.text_field, els[1].role);
+    try testing.expectEqualStrings("Password", els[1].label);
+    try testing.expectEqualStrings("", els[1].value);
+}
+
+const CaptionedLogin = struct {
+    user: ui.TextBuffer = .{},
+    secret: ui.TextBuffer = .{},
+
+    fn view(s: *CaptionedLogin, c: *ui.Context) void {
+        ui.column(c, .{ .gap = 8, .padding = .all(8) });
+        defer ui.end(c);
+        {
+            ui.row(c, .{ .gap = 8, .align_items = .center });
+            defer ui.end(c);
+            ui.text(c, "Username", .{});
+            _ = ui.textField(c, &s.user, .{ .width = .{ .px = 160 } });
+        }
+        {
+            ui.row(c, .{ .gap = 8, .align_items = .center });
+            defer ui.end(c);
+            ui.text(c, "Password", .{});
+            _ = ui.textField(c, &s.secret, .{ .password = true, .width = .{ .px = 160 } });
+        }
+    }
+};
+
+test "text fields without placeholders take their row caption instead of typed text or bullets" {
+    var form: CaptionedLogin = .{};
+    defer {
+        form.user.deinit();
+        form.secret.deinit();
+    }
+    form.user.set("ada");
+    form.secret.set("hunter2");
+    var t: ui.Tester = undefined;
+    try t.init(testing.allocator, .init(&form, CaptionedLogin.view), .{});
+    defer t.deinit();
+    t.frame();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const els = try elements(&t, arena.allocator());
+    try testing.expectEqual(@as(usize, 2), els.len);
+    try testing.expectEqual(access.Role.text_field, els[0].role);
+    try testing.expectEqualStrings("Username", els[0].label);
+    try testing.expectEqualStrings("ada", els[0].value);
+    try testing.expectEqual(access.Role.text_field, els[1].role);
+    try testing.expectEqualStrings("Password", els[1].label);
+    try testing.expectEqualStrings("", els[1].value);
+}

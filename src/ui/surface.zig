@@ -25,6 +25,13 @@ const pointer = @import("surface_pointer.zig");
 const frame_log_mod = @import("frame_log.zig");
 pub const FrameLog = frame_log_mod.FrameLog;
 pub const KeysReleased = struct { ctx: ?*anyopaque, func: *const fn (ctx: ?*anyopaque, s: *Surface) void };
+/// Called on the main thread when the display under a surface changes
+/// (`Surface.on_display_change`): it moved to another screen, or a
+/// screen's parameters changed (resolution, arrangement, HDR). The
+/// surface's `displayInfo` is already the new one.
+pub const DisplayChange = struct { ctx: ?*anyopaque, func: *const fn (ctx: ?*anyopaque, s: *Surface) void };
+const gpu = @import("gpu.zig");
+const display = @import("surface_display.zig");
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 const pacing = @import("pacing.zig");
 const link_pace = @import("surface_pacing.zig");
@@ -112,6 +119,10 @@ pub const Surface = struct {
     /// Scrolling gathered for the link's next frame, and main's frame log.
     scroll: pacing.Scroll = .{},
     pacing_log: pacing.FrameLog = .{},
+    /// The display under the window as last read: each frame's `Context.display_info`.
+    display_info: gpu.DisplayInfo = .{},
+    /// The display under the window changed (`DisplayChange`).
+    on_display_change: ?DisplayChange = null,
     pub fn create(window: *Window, view: ui.View, theme_override: ?Theme) !*Surface {
         const gpa = window.app.gpa;
         const self = try gpa.create(Surface);
@@ -180,7 +191,12 @@ pub const Surface = struct {
             self.reduce_motion = objc.msg(objc.BOOL, ws, "accessibilityDisplayShouldReduceMotion", .{});
             const center = objc.msg(objc.Object, ws, "notificationCenter", .{});
             objc.msg(void, center, "addObserver:selector:name:object:", .{ nsview, objc.sel("accessibilityChanged:"), objc.nsString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification"), @as(?objc.Object, null) });
+            // The display under the window: another screen, or its parameters.
+            const dc = objc.msg(objc.Object, objc.class("NSNotificationCenter"), "defaultCenter", .{});
+            objc.msg(void, dc, "addObserver:selector:name:object:", .{ nsview, objc.sel("nanouiDisplayChanged:"), objc.nsString("NSApplicationDidChangeScreenParametersNotification"), @as(?objc.Object, null) });
+            objc.msg(void, dc, "addObserver:selector:name:object:", .{ nsview, objc.sel("nanouiDisplayChanged:"), objc.nsString("NSWindowDidChangeScreenNotification"), window.nswindow });
         }
+        self.readDisplay();
         self.refreshAppearance();
         self.is_visible = objc.msg(objc.BOOL, window.nswindow, "isVisible", .{}) and (objc.msg(objc.NSUInteger, window.nswindow, "occlusionState", .{}) & 2 != 0);
         self.updateGeometry();
@@ -209,6 +225,7 @@ pub const Surface = struct {
             objc.setZig(self.nsview, null);
             const ws = objc.msg(objc.Object, objc.class("NSWorkspace"), "sharedWorkspace", .{});
             objc.msg(void, objc.msg(objc.Object, ws, "notificationCenter", .{}), "removeObserver:", .{self.nsview});
+            objc.msg(void, objc.msg(objc.Object, objc.class("NSNotificationCenter"), "defaultCenter", .{}), "removeObserver:", .{self.nsview});
             @import("surface_keys.zig").unwatch(self.nsview);
             if (self.display_link) |link| {
                 if (objc.msg(objc.BOOL, link, "respondsToSelector:", .{objc.sel("setDelegate:")}))
@@ -299,6 +316,12 @@ pub const Surface = struct {
         return t;
     }
 
+    /// The display under the window, and what it shows (`surface_display.zig`).
+    pub const setColour = display.setColour;
+    pub const displayInfo = display.displayInfo;
+    pub const readDisplay = display.readDisplay;
+    pub const displayChanged = display.displayChanged;
+
     pub fn frame(self: *Surface) void {
         if (self.in_frame or self.dead) return;
         self.renderer.given_drawable = null;
@@ -328,6 +351,8 @@ pub const Surface = struct {
         self.frame_kind = kind;
         self.ctx.transparent_root = self.transparent;
         a11y.beforeFrame(self);
+        c.display_info = self.display_info;
+        c.surface_colour = self.renderer.colour;
         c.input.window_active = self.window.isFocused();
         c.window_focused = c.input.window_active;
         self.pacing_log.note(now);
@@ -347,6 +372,7 @@ pub const Surface = struct {
             r = frame_mod.run(c, self.view, &self.text, &self.instances, self.size, self.scale, a11y.themed(self, self.theme()), dt, now - self.start_time);
         }
         if (self.dead) return;
+        @import("../window_lights.zig").Lights.sync(self.window, c.traffic_lights, c.title_bar_height);
         a11y.afterFrame(self);
         @import("../play.zig").paint(self.gpa, &self.instances);
         self.frame_in_due = if (c.frame_in) |fi| now + @as(f64, fi) else 0;
@@ -522,21 +548,8 @@ pub const Surface = struct {
         } else self.scheduleTick();
     }
 
-    /// The display link's pace: the display's (null), or one frame every
-    /// `seconds`.
-    pub fn setRate(self: *Surface, seconds: ?f32) void {
-        const link = self.display_link orelse return;
-        const fps: f32 = if (seconds) |s| (if (s < 0.009) 0 else std.math.clamp(1 / @max(s, 0.001), 1, 60)) else 0;
-        if (fps == self.link_fps) return;
-        const faster = (fps == 0 and self.link_fps > 0) or (fps > self.link_fps and self.link_fps > 0);
-        if (fps == 0 and self.link_fps > 0) {
-            if (self.frame_log) |*fl| fl.last_t = 0;
-        }
-        self.link_fps = fps;
-        if (self.paced and faster) objc.msg(void, link, "setPaused:", .{objc.YES});
-        objc.msg(void, link, "setPreferredFrameRateRange:", .{pacing.range(fps, self.max_fps)});
-        if (self.paced and faster) objc.msg(void, link, "setPaused:", .{objc.NO});
-    }
+    pub const setRate = link_pace.setRate;
+    pub const setPaced = link_pace.setPaced;
 
     pub fn visible(self: *Surface) bool {
         if (!self.is_visible) {
@@ -547,14 +560,6 @@ pub const Surface = struct {
             }
         }
         return self.is_visible;
-    }
-
-    pub fn setPaced(self: *Surface, on: bool) void {
-        if (on) wake.watch(self);
-        if (self.paced == on) return;
-        self.paced = on;
-        if (!on and self.frame_log != null) self.frame_log.?.last_t = 0;
-        if (self.display_link) |link| objc.msg(void, link, "setPaused:", .{!on});
     }
 
     pub fn occlusionChanged(self: *Surface) void {

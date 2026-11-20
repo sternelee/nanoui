@@ -10,3 +10,6 @@ import NanoUI.Speedometer3Climb
 import NanoUI.Speedometer3Apex
 import NanoUI.Speedometer3Model
 import NanoUI.IosTouchScroll
+import NanoUI.NanomonRankings
+import NanoUI.NanomonTemperatures
+import NanoUI.LinuxStartup

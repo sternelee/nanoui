@@ -37,6 +37,7 @@ pub fn paintGpu(self: *Surface, h: w.HWND) bool {
         };
         // The beat is this swap chain's monitor's from now on.
         @import("surface_pace.zig").updateOutput(self);
+        self.display_info = self.presenter.?.displayInfo();
     }
     const p = &self.presenter.?;
     // The drag state is set before the size is given to the swap chain: a drag
@@ -48,7 +49,11 @@ pub fn paintGpu(self: *Surface, h: w.HWND) bool {
         return false;
     };
     if (self.gpu == null) {
-        self.gpu = d3d11.Renderer.initOn(@ptrCast(d3d.Presenter.deviceOf(p)), @ptrCast(d3d.Presenter.contextOf(p))) catch {
+        // The app's cache folder: the shaders' bytecode is kept there
+        // (`ui/d3d11_shader_cache.zig`), as the app's other caches are.
+        const cache_root = @import("desktop.zig").path(self.gpa, .cache, self.window.app.options.name) catch null;
+        defer if (cache_root) |dir| self.gpa.free(dir);
+        self.gpu = d3d11.Renderer.initOn(@ptrCast(d3d.Presenter.deviceOf(p)), @ptrCast(d3d.Presenter.contextOf(p)), cache_root) catch {
             self.no_gpu = true;
             nameCpu(self);
             return false;
@@ -58,6 +63,15 @@ pub fn paintGpu(self: *Surface, h: w.HWND) bool {
     const bg = self.ctx.theme.background;
     p.setBackground(bg.r, bg.g, bg.b);
     g.sync(self.text.atlas.mask(), self.text.atlas.generation, self.text.images.pictures(), self.text.images.generation);
+    // What the app asked the window to show (`setColour`), at this frame's
+    // boundary: no back buffer is held yet (`ResizeBuffers` needs none).
+    if ((self.colour == .extended_linear) != p.extended) {
+        _ = p.setExtended(self.colour == .extended_linear);
+        self.display_info = p.displayInfo();
+        self.ctx.changed = true;
+    }
+    g.extended = p.extended;
+    g.sdr_white_scale = self.display_info.sdr_white_scale;
     // The back buffer is a COM reference: released before the swap chain may
     // be resized, or ResizeBuffers fails with DXGI_ERROR_INVALID_CALL
     // (0x887A0001) because a reference is still held.
@@ -144,6 +158,8 @@ pub fn present(self: *Surface, h: w.HWND) bool {
         };
     }
     const p = &self.presenter.?;
+    // The CPU's pixels are BGRA8: an scRGB chain goes back first.
+    if (p.extended) _ = p.setExtended(false);
     const bg = self.ctx.theme.background;
     p.setBackground(bg.r, bg.g, bg.b);
     p.upload(self.pixels.bytes, pw, ph) catch |e| {
@@ -243,17 +259,21 @@ pub fn paint(self: *Surface, h: w.HWND) void {
     // a DXGI flip-model swap chain, so a GPU frame would not fade. Below 1 the
     // canvas draws the frame and GDI copies the pixels into the layered
     // window, which does show the alpha; at 1 the GPU is picked back up.
-    if (wantsGpu(self) and paintGpu(self, h)) return;
+    // The first frame is the canvas's even with a GPU: loading the driver
+    // takes ~150 ms, and the window can show its content without it.
+    if (wantsGpu(self) and self.gpu != null and paintGpu(self, h)) return;
     self.pixels.draw(self.gpa, shown(self));
     const px = &self.pixels;
     if (px.bytes.len == 0) return;
     // The swap chain can show the canvas's pixels too — but never on a
     // layered window, for the same reason `paintGpu` stands down above.
-    if (wantsGpu(self) and present(self, h)) return;
+    if (wantsGpu(self) and self.presenter != null and present(self, h)) return;
     // A negative height: rows from the top, as the renderer writes them.
     // GDI copies only what was invalidated.
     const info: w.BITMAPINFOHEADER = .{ .biWidth = @intCast(px.width), .biHeight = -@as(i32, @intCast(px.height)) };
     _ = w.SetDIBitsToDevice(dc, 0, 0, @intCast(px.width), @intCast(px.height), 0, 0, 0, @intCast(px.height), px.bytes.ptr, &info, 0);
+    // The frame is on the window: the GPU is made behind the next one.
+    if (wantsGpu(self) and self.presenter == null) _ = paintGpu(self, h);
 }
 
 /// `NANOUI_DUMP`, on F12: draws the frame whole beside what the canvas

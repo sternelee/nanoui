@@ -2,6 +2,7 @@
 //! and the descriptors, each laid out as `d3d11.h` declares it, with the
 //! sizes checked at compile time. `d3d11.zig` draws the frame with them.
 const std = @import("std");
+const cache = @import("d3d11_shader_cache.zig");
 
 pub const HRESULT = i32;
 pub const Guid = extern struct { a: u32, b: u16, c: u16, d: [8]u8 };
@@ -33,6 +34,7 @@ pub const srv_buffer: u32 = 1;
 // D3D11_COMPARISON_ALWAYS, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP.
 pub const fill_solid: u32 = 3;
 pub const cull_none: u32 = 1;
+pub const blend_zero: u32 = 1;
 pub const blend_one: u32 = 2;
 pub const blend_inv_src_alpha: u32 = 6;
 pub const blend_inv_src1_color: u32 = 17;
@@ -118,10 +120,20 @@ pub fn underWine() bool {
 }
 
 /// A shader of `source`, entry point `entry`, as `create` (one of
-/// ID3D11Device's slots) makes it. `error.ShaderCompilerMissing` without a
+/// ID3D11Device's slots) makes it; `cache_root` is the app's cache folder,
+/// or null for none. `error.ShaderCompilerMissing` without a
 /// compiler, `error.ShaderCompilerUnavailable` when Wine's cannot compile
 /// it (`underWine`), `error.ShaderCompile` for a shader that is wrong.
-pub fn shaderFrom(device: *Com, source: []const u8, comptime name: [:0]const u8, comptime entry: [:0]const u8, comptime target: [:0]const u8, comptime create: usize) !*Com {
+pub fn shaderFrom(device: *Com, source: []const u8, comptime name: [:0]const u8, comptime entry: [:0]const u8, comptime target: [:0]const u8, comptime create: usize, cache_root: ?[]const u8) !*Com {
+    const key: cache.Key = .{ .source = source, .entry = entry };
+    // What a previous run compiled: making a shader of the bytecode is a
+    // millisecond, and `D3DCompile` is a hundred (`quad_ps`). A device that
+    // will not take the bytecode is left to the compiler below, as though
+    // there were no cache.
+    if (cache.load(key, cache_root)) |cached| {
+        defer cached.deinit();
+        if (makeShader(device, cached.code(), create)) |made| return made;
+    }
     var blob: ?*Blob = null;
     var errors: ?*Blob = null;
     const compile = d3dCompile() orelse return error.ShaderCompilerMissing;
@@ -137,9 +149,18 @@ pub fn shaderFrom(device: *Com, source: []const u8, comptime name: [:0]const u8,
     if (hr < 0) return if (wine) error.ShaderCompilerUnavailable else error.ShaderCompile;
     const b = blob orelse return error.ShaderCompile;
     defer b.release();
+    const bytes = b.bytes()[0..b.size()];
+    const made = makeShader(device, bytes, create) orelse return error.ShaderCompile;
+    cache.store(key, cache_root, bytes);
+    return made;
+}
+
+/// The shader `bytes` make on `device` (one of ID3D11Device's `create` slots),
+/// or null when the device will not take them.
+fn makeShader(device: *Com, bytes: []const u8, comptime create: usize) ?*Com {
     var out: ?*Com = null;
-    try check(device.slot(*const fn (*Com, [*]const u8, usize, ?*anyopaque, *?*Com) callconv(.winapi) HRESULT, create)(device, b.bytes(), b.size(), null, &out));
-    return out orelse error.ShaderCompile;
+    if (device.slot(*const fn (*Com, [*]const u8, usize, ?*anyopaque, *?*Com) callconv(.winapi) HRESULT, create)(device, bytes.ptr, bytes.len, null, &out) < 0) return null;
+    return out;
 }
 
 pub fn d3dCompile() ?CompileFn {
@@ -179,7 +200,7 @@ comptime {
     std.debug.assert(@sizeOf(BlendDesc) == 264);
     std.debug.assert(@sizeOf(RasterizerDesc) == 40);
     std.debug.assert(@sizeOf(SamplerDesc) == 52);
-    std.debug.assert(@sizeOf(Params) == 112);
+    std.debug.assert(@sizeOf(Params) == 160);
 }
 
 pub fn check(hr: HRESULT) !void {
@@ -307,7 +328,11 @@ pub const Params = extern struct {
     gamma: [4]f32 = .{ 0, 0, 0, 0 },
     contrast: f32 = 0,
     grayscale_contrast: f32 = 0,
-    pad2: [2]f32 = .{ 0, 0 },
+    classic_contrast: f32 = 0,
+    classic_gray_contrast: f32 = 0,
+    progressive: [4]f32 = .{ 0, 0, 0, 0 },
+    classic_gamma: [4]f32 = .{ 0, 0, 0, 0 },
+    classic_gray_gamma: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
 /// The size a texture is made at to hold a `want`-tall or -wide frame that the
@@ -327,6 +352,17 @@ pub const Target = struct {
     srv: ?*Com = null,
     w: usize = 0,
     h: usize = 0,
+    /// The DXGI format it is made in (`reserveAs`): BGRA8 unless said.
+    format: u32 = bgra8,
+
+    /// `reserve` in `format`: remade when it was made in another.
+    pub fn reserveAs(t: *Target, device: *Com, w: usize, h: usize, exact: bool, format: u32) void {
+        if (t.format != format) {
+            t.deinit();
+            t.format = format;
+        }
+        t.reserve(device, w, h, exact);
+    }
 
     /// At least `w` × `h` (exactly, when `exact`); a no-op when it already
     /// fits. On failure it stays unusable (`rtv` null, `w` and `h` zero).
@@ -339,6 +375,7 @@ pub const Target = struct {
             const oversized = !exact and w * 4 < t.w and h * 4 < t.h;
             if (fits and !oversized) return;
         }
+        const format = t.format;
         t.deinit();
         // Grown in steps, not to the exact size: a drag resize asks for a few
         // more pixels a frame, and reallocating the texture (with its two views)
@@ -352,7 +389,7 @@ pub const Target = struct {
         const tw: u32 = @intCast(if (exact) want_w else stepSize(want_w, t.w));
         const th: u32 = @intCast(if (exact) want_h else stepSize(want_h, t.h));
         if (tw == 0 or th == 0) return;
-        const tex = texture2D(device, bgra8, tw, th, bind_render_target | bind_shader_resource) orelse return;
+        const tex = texture2D(device, format, tw, th, bind_render_target | bind_shader_resource) orelse return;
         var rtv: ?*Com = null;
         check(device.slot(*const fn (*Com, *Com, ?*const anyopaque, *?*Com) callconv(.winapi) HRESULT, CreateRenderTargetView)(device, tex, null, &rtv)) catch {
             tex.release();
@@ -364,14 +401,15 @@ pub const Target = struct {
             tex.release();
             return;
         };
-        t.* = .{ .texture = tex, .rtv = rtv, .srv = srv, .w = tw, .h = th };
+        t.* = .{ .texture = tex, .rtv = rtv, .srv = srv, .w = tw, .h = th, .format = format };
     }
 
     pub fn deinit(t: *Target) void {
         if (t.srv) |v| v.release();
         if (t.rtv) |v| v.release();
         if (t.texture) |v| v.release();
-        t.* = .{};
+        const format = t.format;
+        t.* = .{ .format = format };
     }
 };
 

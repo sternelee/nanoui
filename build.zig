@@ -5,7 +5,7 @@ pub const ios = @import("tools/ios/bundle.zig");
 /// Android APKs, likewise: `@import("nanoui").android.apk(b, lib, .{ .name = "Notes", .id = "com.example.notes" })`.
 pub const android = @import("tools/android/apk.zig");
 
-const examples = [_][]const u8{ "hello", "counter", "gallery", "ruler", "duo", "board", "basics", "map", "turn", "access", "todo", "sgbus", "browser", "drop", "scenes" };
+const examples = [_][]const u8{ "hello", "counter", "gallery", "ruler", "duo", "board", "basics", "map", "turn", "access", "todo", "sgbus", "browser", "drop", "scenes", "page-auth", "page-drop" };
 const frameworks = [_][]const u8{ "AppKit", "WebKit", "Metal", "QuartzCore", "CoreText", "CoreGraphics", "CoreFoundation", "Foundation", "ImageIO", "UniformTypeIdentifiers", "CoreVideo" };
 const ios_frameworks = [_][]const u8{ "UIKit", "CoreLocation", "MapKit", "Metal", "QuartzCore", "CoreText", "CoreGraphics", "CoreFoundation", "Foundation", "ImageIO", "UniformTypeIdentifiers", "CoreVideo" };
 
@@ -144,7 +144,7 @@ pub fn build(b: *std.Build) void {
         // Pages (the hello and browser examples) need a webview: WKWebView on
         // macOS and iOS, WebView2 on Windows, WebKitGTK on Linux.
         const has_pages = os == .macos or os == .ios or os == .windows or (os == .linux and !target.result.abi.isAndroid());
-        if (!has_pages and (std.mem.eql(u8, name, "hello") or std.mem.eql(u8, name, "browser"))) continue;
+        if (!has_pages and (std.mem.eql(u8, name, "hello") or std.mem.eql(u8, name, "browser") or std.mem.eql(u8, name, "page-auth") or std.mem.eql(u8, name, "page-drop"))) continue;
         if (os == .ios) {
             addIosExample(b, name, target, optimize, nanoui);
             continue;
@@ -165,6 +165,8 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
         if (std.mem.eql(u8, name, "ruler"))
             b.step("ruler", "Build the native ruler example").dependOn(&b.addInstallArtifact(exe, .{}).step);
+        if (std.mem.eql(u8, name, "counter"))
+            b.step("counter", "Build the native counter example").dependOn(&b.addInstallArtifact(exe, .{}).step);
         const run = b.addRunArtifact(exe);
         run.addPassthruArgs();
         b.step(b.fmt("run-{s}", .{name}), b.fmt("Run the {s} example", .{name})).dependOn(&run.step);
@@ -212,6 +214,13 @@ pub fn build(b: *std.Build) void {
     // The accessibility demo, as VoiceOver reads it.
     if (!target.result.abi.isAndroid()) test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("examples/access/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "nanoui", .module = nanoui }},
+    }) })).step);
+    // The gallery's pages, command palette, dock studio, and phone layout.
+    if (!target.result.abi.isAndroid()) test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/gallery/tests.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "nanoui", .module = nanoui }},

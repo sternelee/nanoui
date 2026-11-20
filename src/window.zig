@@ -11,6 +11,13 @@ const Lights = @import("window_lights.zig").Lights;
 const window_types = @import("window_types.zig");
 pub const Asset = window_types.Asset;
 pub const PageOptions = window_types.PageOptions;
+pub const PageHeader = window_types.PageHeader;
+pub const PageRequest = window_types.PageRequest;
+pub const PageDropDecision = window_types.PageDropDecision;
+pub const PageDropPhase = window_types.PageDropPhase;
+pub const PageDropOffer = window_types.PageDropOffer;
+pub const PageDropEvent = window_types.PageDropEvent;
+pub const PageFileDrop = window_types.PageFileDrop;
 pub const Content = window_types.Content;
 pub const TitleBar = window_types.TitleBar;
 pub const Callback = window_types.Callback(Window);
@@ -44,8 +51,10 @@ pub const Window = struct {
     on_fullscreen: ?Callback = null,
     on_key: ?Callback = null,
     should_close: ?ShouldClose = null,
-    /// The traffic lights kept where `Options.traffic_lights` put them.
+    /// The traffic lights kept where `Options.traffic_lights` or the view's top bar put them.
     lights: ?Lights = null,
+    can_place_lights: bool = false,
+    options_lights: ?ui.Point = null,
     closed: bool = false,
     /// When a popover last hid itself, losing the keys.
     resigned_at: f64 = 0,
@@ -129,6 +138,8 @@ pub const Window = struct {
             .nswindow = nswindow,
             .delegate = delegate,
             .title_bar = options.title_bar,
+            .can_place_lights = options.title_bar == .hidden and !borderless,
+            .options_lights = options.traffic_lights,
             .on_close = options.on_close,
             .on_resize = options.on_resize,
             .on_move = options.on_move,
@@ -141,11 +152,7 @@ pub const Window = struct {
             .page => |p| self.page = try Page.create(self, p),
             .view => |v| self.surface = try Surface.create(self, v, options.theme),
         }
-        if (options.traffic_lights) |p| if (options.title_bar == .hidden and !borderless) {
-            self.lights = Lights.init(nswindow, p.x, p.y);
-            Lights.observe(nswindow, delegate);
-            self.lights.?.place(nswindow);
-        };
+        if (self.surface == null) Lights.sync(self, options.traffic_lights, 28);
         if (popover) {
             objc.msg(void, nswindow, "setOpaque:", .{objc.NO});
             objc.msg(void, nswindow, "setBackgroundColor:", .{objc.msg(objc.Object, objc.class("NSColor"), "clearColor", .{})});
@@ -397,6 +404,13 @@ pub const Window = struct {
     /// absolute `http(s)://` one. No effect on a native-UI window.
     pub fn setPageUrl(self: *Window, url: []const u8) void {
         if (self.page) |p| p.load(url);
+    }
+
+    /// Starts an explicit GET navigation with optional per-request headers
+    /// (`Authorization`, etc.) on the window's `.page` webview.
+    pub fn loadPageRequest(self: *Window, req: PageRequest) @import("page_request.zig").Error!void {
+        const p = self.page orelse return error.NoPage;
+        return p.loadRequest(req);
     }
 
     /// Shows entry `i` of `PageOptions.pages` (the bar's buttons).

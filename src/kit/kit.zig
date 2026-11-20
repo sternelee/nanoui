@@ -1,8 +1,8 @@
 //! nanoui's component kit, after GPUI Kit (longbridge/gpui-component):
 //! buttons in its variants and sizes, tags, badges, avatars, alerts,
-//! skeletons, spinners and progress; tooltips, popovers, menus, dialogs,
-//! sheets and toasts drawn on layers over the page; tabs, accordions,
-//! radio groups, selects, number inputs, breadcrumbs and pagination. Each
+//! skeletons, spinners, progress and timeline rows; tooltips, popovers,
+//! menus, dialogs, sheets and toasts drawn on layers over the page; tabs,
+//! accordions, radio groups, selects, number inputs, breadcrumbs and pagination. Each
 //! is a call in a frame, as nanoui's widgets are, styled from the theme
 //! and moved with `ui.motion`.
 //!
@@ -24,6 +24,7 @@ pub const Variant = button_mod.Variant;
 const display = @import("display.zig");
 pub const tag = display.tag;
 pub const badge = display.badge;
+pub const kbd = display.kbd;
 pub const avatar = display.avatar;
 pub const avatarGroup = display.avatarGroup;
 pub const alert = display.alert;
@@ -33,6 +34,10 @@ pub const progress = display.progress;
 pub const ring = display.ring;
 pub const separator = display.separator;
 pub const empty = display.empty;
+
+const timeline = @import("timeline.zig");
+pub const timelineItem = timeline.timelineItem;
+pub const TimelineItemOptions = timeline.Options;
 
 const overlay = @import("overlay.zig");
 pub const Placement = overlay.Placement;
@@ -163,4 +168,5 @@ pub fn statusIcon(s: Status) []const u8 {
 
 test {
     _ = @import("tests.zig");
+    _ = @import("tests_timeline.zig");
 }

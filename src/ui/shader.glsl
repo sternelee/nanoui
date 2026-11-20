@@ -237,9 +237,10 @@ float clip_coverage() {
     if (v_screen.x < i_clip.x || v_screen.y < i_clip.y || v_screen.x > i_clip.z || v_screen.y > i_clip.w) discard;
     float clip_cover = 1.0;
     float clip_round = i_misc.w;
-    if (clip_round > 0.0) {
-        float corners = floor(clip_round / 4096.0);
-        float rad = clip_round - corners * 4096.0;
+    if (clip_round != 0.0) {
+        float corners = floor(abs(clip_round) / 4096.0);
+        float rad = abs(clip_round) - corners * 4096.0;
+        if (clip_round < 0.0) rad = -rad;
         vec2 ch = (i_clip.zw - i_clip.xy) * 0.5;
         vec2 q = v_screen - i_clip.xy - ch;
         vec2 cd = corner_sdf_aa(q, ch, min(rad, min(ch.x, ch.y)));
@@ -254,6 +255,7 @@ float clip_coverage() {
 #if defined(QUAD_FS)
 uniform sampler2D atlas;
 uniform sampler2D images;
+uniform sampler2D group_layer;
 
 // Shadows as GPUI draws them (after Evan Wallace's "fast rounded rectangle
 // shadows"): the box's coverage blurred by a Gaussian, exact along x with
@@ -340,6 +342,13 @@ vec4 triangle_color() {
 
 vec4 shade() {
     float kind = i_misc.z;
+    if (kind == 10.0 || kind == 11.0) {
+        float fade = 1.0;
+        if (i_border_color.z > 0.0) fade = min(fade, clamp((v_world.y - i_border_color.x) / i_border_color.z, 0.0, 1.0));
+        if (i_border_color.w > 0.0) fade = min(fade, clamp((i_border_color.y - v_world.y) / i_border_color.w, 0.0, 1.0));
+        return texelFetch(group_layer, ivec2(gl_FragCoord.xy), 0) * (i_color.a * fade);
+    }
+    if (kind == 9.0) return vec4(0.0);
     if (kind == 6.0) return line_color();
     if (kind == 7.0) return triangle_color();
     if (kind == 1.0) {
@@ -491,12 +500,19 @@ void main() {
     float rr = min(i_misc.x * s, min(h.x, h.y));
     float t = max(-rounded_box(q, h, rr), 0.0);
     float bezel = i_uv.x * s;
-    float rim_width = i_uv.w * s;
+    bool sidebar = i_uv.x < 0.0;
+    float rim_width = sidebar ? 0.0 : i_uv.w * s;
     vec2 n = vec2(0.0);
     if (t < bezel || t < 3.0 * rim_width) n = glass_normal(q, h, rr);
     vec2 at = p;
     if (t < bezel) at -= n * (i_uv.y * s * glass_lens(t, bezel));
-    vec3 c = glass_tone(glass_sample(at), i_border_color);
+    vec3 back_color = glass_sample(at);
+    if (sidebar && i_uv.w > 0.0) {
+        float right = (i_rect.x + i_rect.z) * s;
+        float u = clamp((p.x - i_rect.x * s) / (2.0 * h.x), 0.0, 1.0);
+        back_color = mix(back_color, glass_sample(vec2(2.0 * right - p.x, p.y)), i_uv.w * u * u);
+    }
+    vec3 c = glass_tone(back_color, i_border_color);
     c += (i_color.rgb - c) * i_color.a;
     if (t < 3.0 * rim_width) {
         float r = t / rim_width;
@@ -547,15 +563,22 @@ void main() {
 uniform sampler2D src;
 uniform int radius;
 uniform float sigma;
+uniform vec4 progressive;
 uniform ivec2 dir;
 
 void main() {
     ivec2 gid = ivec2(gl_FragCoord.xy);
     vec3 sum = vec3(0.0);
     float wsum = 0.0;
+    float sigma_at = sigma;
+    if (progressive.z > 0.0) {
+        float y = float(gid.y) + 0.5;
+        float t = clamp(min(y - progressive.x, progressive.y - y) / progressive.z, 0.0, 1.0);
+        sigma_at *= 1.0 - 0.65 * t * t * (3.0 - 2.0 * t);
+    }
     for (int k = -radius; k <= radius; k++) {
         ivec2 p = clamp(gid + dir * k, ivec2(0), size - 1);
-        float w = exp(-float(k * k) / (2.0 * sigma * sigma));
+        float w = exp(-float(k * k) / (2.0 * sigma_at * sigma_at));
         sum += texelFetch(src, p, 0).rgb * w;
         wsum += w;
     }

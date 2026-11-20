@@ -9,11 +9,12 @@
 const std = @import("std");
 const types = @import("types.zig");
 const gpu = @import("gpu.zig");
-const glass = @import("glass.zig");
 const raster = @import("raster.zig");
 const text_blend = @import("text_blend.zig");
+const d3d11_glass = @import("d3d11_glass.zig");
 const d3d11_texture = @import("d3d11_texture.zig");
-const source = @embedFile("shader.hlsl");
+const d3d11_hdr = @import("d3d11_hdr.zig");
+pub const source = @embedFile("shader.hlsl") ++ @embedFile("corner_sdf.hlsl") ++ @embedFile("hdr.hlsl");
 
 const api = @import("d3d11_glue.zig");
 const Target = api.Target;
@@ -84,8 +85,8 @@ const CreateRasterizerState = api.CreateRasterizerState;
 const CreateSamplerState = api.CreateSamplerState;
 
 /// A shader of `source`, entry point `entry`, as `create` makes it.
-fn shader(device: *Com, comptime entry: [:0]const u8, comptime target: [:0]const u8, comptime create: usize) !*Com {
-    return api.shaderFrom(device, source, "shader.hlsl", entry, target, create);
+fn shader(device: *Com, cache_root: ?[]const u8, comptime entry: [:0]const u8, comptime target: [:0]const u8, comptime create: usize) !*Com {
+    return api.shaderFrom(device, source, "shader.hlsl", entry, target, create, cache_root);
 }
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
@@ -126,6 +127,8 @@ pub const Renderer = struct {
     images_size: u32 = 0,
     images_generation: u64 = std.math.maxInt(u64),
     text_params: text_blend.Params = .{},
+    classic_text_params: text_blend.Params = .{},
+    classic_gray_params: text_blend.Params = .{},
     rgb_text: bool = true,
     frame: Target = .{},
     /// The size the last frame was drawn at, which the frame texture may be
@@ -149,6 +152,17 @@ pub const Renderer = struct {
     slots: d3d11_texture.Slots = .{},
     /// The texture the next draw samples at t5 (one texture instance's).
     bound_texture: ?*Com = null,
+    groups: std.ArrayList(Target) = .empty,
+    group_depth: usize = 0,
+    /// Draw into an RGBA16F target as an extended (scRGB) surface does
+    /// (`d3d11_hdr.zig`): the UI decoded and scaled by `sdr_white_scale`,
+    /// the `.surface_linear` textures in a plane under it.
+    extended: bool = false,
+    sdr_white_scale: f32 = 1,
+    hdr: d3d11_hdr.Hdr = .{},
+    /// Where the shaders' bytecode is cached, kept for the extended ones.
+    cache_root_buf: [512]u8 = undefined,
+    cache_root_len: usize = 0,
 
     /// A hardware device (WARP when there is none), every shader, and the
     /// state one frame is drawn with.
@@ -164,7 +178,7 @@ pub const Renderer = struct {
     /// without a GPU. Four parity tests skipped on a machine with Direct3D 11
     /// and a shader whose `Instance` was 96 bytes instead of 144, and printed
     /// numbers from an earlier, working build while doing it.
-    pub fn init() !Renderer {
+    pub fn init(cache_root: ?[]const u8) !Renderer {
         // Made as the app's shared device is (`d3d11_device.zig`): video
         // support where there is some, multithread protected.
         const pair = try @import("d3d11_device.zig").create();
@@ -174,7 +188,7 @@ pub const Renderer = struct {
             ctx.release();
             dev.release();
         }
-        var r = try prepare(dev, ctx);
+        var r = try prepare(dev, ctx, cache_root);
         r.owns_device = true;
         return r;
     }
@@ -182,29 +196,43 @@ pub const Renderer = struct {
     /// On a device someone else owns — the window's swap chain — so that
     /// what this draws can be copied into that swap chain's back buffer
     /// without a second device, which D3D would refuse to copy across.
-    pub fn initOn(device: *Com, context: *Com) !Renderer {
-        return prepare(device, context);
+    pub fn initOn(device: *Com, context: *Com, cache_root: ?[]const u8) !Renderer {
+        return prepare(device, context, cache_root);
     }
 
-    fn prepare(dev: *Com, ctx: *Com) !Renderer {
+    fn prepare(dev: *Com, ctx: *Com, cache_root: ?[]const u8) !Renderer {
         var r: Renderer = .{
             .device = dev,
             .context = ctx,
-            .quad_vs = try shader(dev, "quad_vs", "vs_5_0", CreateVertexShader),
-            .quad_ps = try shader(dev, "quad_ps", "ps_5_0", CreatePixelShader),
-            .glass_ps = try shader(dev, "glass_ps", "ps_5_0", CreatePixelShader),
-            .pass_vs = try shader(dev, "pass_vs", "vs_5_0", CreateVertexShader),
-            .down_ps = try shader(dev, "down_ps", "ps_5_0", CreatePixelShader),
-            .blur_ps = try shader(dev, "blur_ps", "ps_5_0", CreatePixelShader),
+            .quad_vs = undefined,
+            .quad_ps = undefined,
+            .glass_ps = undefined,
+            .pass_vs = undefined,
+            .down_ps = undefined,
+            .blur_ps = undefined,
             .blend = undefined,
             .rasterizer = undefined,
             .sampler = undefined,
             .params = undefined,
             .rgb_text = rgbTextEnabled(),
         };
-        // The six shaders are in `r` already: if a state object or the params
-        // buffer cannot be made, they go with it.
-        errdefer for ([_]*Com{ r.quad_vs, r.quad_ps, r.glass_ps, r.pass_vs, r.down_ps, r.blur_ps }) |s| s.release();
+        if (cache_root) |dir| if (dir.len <= r.cache_root_buf.len) {
+            @memcpy(r.cache_root_buf[0..dir.len], dir);
+            r.cache_root_len = dir.len;
+        };
+        // Every shader now: bytecode from the cache is a millisecond each.
+        r.quad_vs = try shader(dev, cache_root, "quad_vs", "vs_5_0", CreateVertexShader);
+        errdefer r.quad_vs.release();
+        r.quad_ps = try shader(dev, cache_root, "quad_ps", "ps_5_0", CreatePixelShader);
+        errdefer r.quad_ps.release();
+        r.glass_ps = try shader(dev, cache_root, "glass_ps", "ps_5_0", CreatePixelShader);
+        errdefer r.glass_ps.release();
+        r.pass_vs = try shader(dev, cache_root, "pass_vs", "vs_5_0", CreateVertexShader);
+        errdefer r.pass_vs.release();
+        r.down_ps = try shader(dev, cache_root, "down_ps", "ps_5_0", CreatePixelShader);
+        errdefer r.down_ps.release();
+        r.blur_ps = try shader(dev, cache_root, "blur_ps", "ps_5_0", CreatePixelShader);
+        errdefer r.blur_ps.release();
         const bd: BlendDesc = .{};
         try check(dev.slot(*const fn (*Com, *const BlendDesc, *?*Com) callconv(.winapi) HRESULT, CreateBlendState)(dev, &bd, @ptrCast(&r.blend)));
         const rd: RasterizerDesc = .{};
@@ -225,9 +253,21 @@ pub const Renderer = struct {
         if (r.native_atlas) |t| t.release();
         if (r.images_srv) |t| t.release();
         if (r.images) |t| t.release();
-        for ([_]*Com{ r.params, r.sampler, r.rasterizer, r.blend, r.quad_vs, r.quad_ps, r.glass_ps, r.pass_vs, r.down_ps, r.blur_ps }) |s| s.release();
+        r.params.release();
+        r.sampler.release();
+        r.rasterizer.release();
+        r.blend.release();
+        r.quad_vs.release();
+        r.quad_ps.release();
+        r.glass_ps.release();
+        r.pass_vs.release();
+        r.down_ps.release();
+        r.blur_ps.release();
         r.slots.deinit();
+        r.hdr.deinit();
         r.frame.deinit();
+        for (r.groups.items) |*group| group.deinit();
+        r.groups.deinit(std.heap.page_allocator);
         r.snap.deinit();
         r.a.deinit();
         r.b.deinit();
@@ -240,6 +280,8 @@ pub const Renderer = struct {
     /// Brings the GPU's copies of the glyph and picture atlases up to date.
     pub fn sync(r: *Renderer, mask: raster.Mask, mask_generation: u64, pictures: raster.Pictures, pictures_generation: u64) void {
         r.text_params = mask.text_params;
+        r.classic_text_params = mask.classic_text_params;
+        r.classic_gray_params = mask.classic_gray_params;
         if (mask.size > 0 and (mask_generation != r.atlas_generation or mask.size != r.atlas_size)) {
             if (r.atlas_srv) |t| t.release();
             r.atlas_srv = null;
@@ -297,6 +339,16 @@ pub const Renderer = struct {
         // The textures first: an app's D3D11 texture may be converted by the
         // colour stage, which draws into its slot's target with a viewport
         // of its own, so the frame's target and viewport are set after it.
+        // An extended frame's own shaders, made the first time; a failure
+        // draws the frame as an SDR one (copied, below).
+        const extended = r.extended and target != null and blk: {
+            r.hdr.ensure(r) catch |err| {
+                std.log.warn("nanoui: the extended surface's shaders failed ({t}): drawing SDR", .{err});
+                break :blk false;
+            };
+            break :blk true;
+        };
+        r.slots.extended = extended;
         r.slots.prepare(r.device, g, r.textures);
 
         setViewport(g, @floatFromInt(w), @floatFromInt(h));
@@ -308,19 +360,60 @@ pub const Renderer = struct {
         r.uploadInstances(instances);
         r.setState();
 
-        var first: usize = 0;
-        while (first < instances.len) {
-            // What comes before the next pane, in one draw.
-            var end = first;
-            while (end < instances.len and instances[end].kind != gpu.Kind.glass) end += 1;
-            r.drawRun(instances, size, scale, first, end);
-            if (end == instances.len) break;
-            r.drawPane(instances, end, size, scale);
-            first = end + 1;
-        }
+        r.drawSpan(instances, size, scale, 0, instances.len, 0, false);
+        if (extended) return d3d11_hdr.finish(r, instances, size, scale, target.?, w, h);
         if (target) |t| {
             const src: Box = .{ .right = @intCast(w), .bottom = @intCast(h) };
             g.slot(*const fn (*Com, *Com, u32, u32, u32, u32, *Com, u32, ?*const Box) callconv(.winapi) void, CopySubresourceRegion)(g, t, 0, 0, 0, 0, f.texture.?, 0, &src);
+        }
+    }
+
+    fn drawSpan(r: *Renderer, instances: []const gpu.Instance, size: types.Size, scale: f32, begin: usize, last: usize, depth: usize, skip_glass: bool) void {
+        const g = r.context;
+        var first = begin;
+        while (first < last) {
+            var end = first;
+            while (end < last and instances[end].kind != gpu.Kind.glass and instances[end].kind != gpu.Kind.layer_begin) end += 1;
+            r.drawRun(instances, size, scale, first, end);
+            if (end == last) break;
+            if (instances[end].kind == gpu.Kind.glass) {
+                if (!skip_glass) d3d11_glass.drawPane(r, instances, end, size, scale);
+                first = end + 1;
+                continue;
+            }
+            const close = gpu.groupEnd(instances[0..last], end) orelse break;
+            const masked = instances[close].border_color[2] > 0 or instances[close].border_color[3] > 0;
+            if (!masked) {
+                var at = end + 1;
+                while (at < close) : (at += 1) {
+                    if (instances[at].kind == gpu.Kind.layer_begin) {
+                        at = gpu.groupEnd(instances[0..close], at) orelse break;
+                        continue;
+                    }
+                    if (instances[at].kind == gpu.Kind.glass) d3d11_glass.drawPane(r, instances, at, size, scale);
+                }
+            }
+            while (r.groups.items.len <= depth) r.groups.append(std.heap.page_allocator, .{}) catch return;
+            var group = r.groups.items[depth];
+            group.reserve(r.device, r.frame_w, r.frame_h, false);
+            r.groups.items[depth] = group;
+            if (group.rtv == null or group.srv == null) return;
+            const parent = r.frame;
+            r.frame = group;
+            var empty = [1]?*Com{null};
+            g.slot(*const fn (*Com, u32, u32, [*]const ?*Com) callconv(.winapi) void, PSSetShaderResources)(g, 5, 1, &empty);
+            bindTarget(g, group.rtv.?);
+            g.slot(*const fn (*Com, *Com, *const [4]f32) callconv(.winapi) void, ClearRenderTargetView)(g, group.rtv.?, &[4]f32{ 0, 0, 0, 0 });
+            r.group_depth += 1;
+            r.drawSpan(instances, size, scale, end + 1, close, depth + 1, !masked);
+            r.group_depth -= 1;
+            r.groups.items[depth] = r.frame;
+            r.frame = parent;
+            bindTarget(g, parent.rtv.?);
+            r.bound_texture = group.srv;
+            r.drawRange(false, size, scale, close, 1, .{});
+            r.bound_texture = null;
+            first = close + 1;
         }
     }
 
@@ -352,12 +445,12 @@ pub const Renderer = struct {
     /// `SV_VertexID`, the instance from the structured buffer).
     /// Premultiplied alpha over the target, or off while a pass writes one
     /// whole texel at a time.
-    fn setBlend(r: *Renderer, on: bool) void {
+    pub fn setBlend(r: *Renderer, on: bool) void {
         const g = r.context;
         g.slot(*const fn (*Com, ?*Com, ?*const [4]f32, u32) callconv(.winapi) void, OMSetBlendState)(g, if (on) r.blend else null, &[4]f32{ 0, 0, 0, 0 }, 0xffffffff);
     }
 
-    fn setState(r: *Renderer) void {
+    pub fn setState(r: *Renderer) void {
         const g = r.context;
         r.setBlend(true);
         g.slot(*const fn (*Com, ?*Com) callconv(.winapi) void, RSSetState)(g, r.rasterizer);
@@ -379,23 +472,30 @@ pub const Renderer = struct {
             if (instances[i].kind != gpu.Kind.texture) continue;
             r.drawRange(false, size, scale, from, i - from, .{});
             from = i + 1;
-            const tex = r.slots.get(@intFromFloat(@max(0, instances[i].border_width))) orelse continue;
+            const slot: usize = @intFromFloat(@max(0, instances[i].border_width));
+            const tex = r.slots.get(slot) orelse continue;
             r.bound_texture = tex;
             defer r.bound_texture = null;
+            // An extended frame's linear texture is drawn in the plane: its
+            // shape is cut out of the UI here (`d3d11_hdr.zig`).
+            const hole = d3d11_hdr.inPlane(r, slot);
+            if (hole) r.context.slot(*const fn (*Com, ?*Com, ?*const [4]f32, u32) callconv(.winapi) void, OMSetBlendState)(r.context, r.hdr.hole_blend, &[4]f32{ 0, 0, 0, 0 }, 0xffffffff);
+            defer if (hole) r.setBlend(true);
             r.drawRange(false, size, scale, i, 1, .{});
         }
         r.drawRange(false, size, scale, from, end - from, .{});
     }
 
     /// Instances [first, first + count) in one instanced draw, into the frame.
-    fn drawRange(r: *Renderer, pane: bool, size: types.Size, scale: f32, first: usize, count: usize, extra: Params) void {
+    pub fn drawRange(r: *Renderer, pane: bool, size: types.Size, scale: f32, first: usize, count: usize, extra: Params) void {
         if (count == 0) return;
         const g = r.context;
         var p: Params = extra;
         p.start_instance = @intCast(first);
         r.setParams(size, scale, p);
+        const ps = if (pane) r.glass_ps else r.quad_ps;
         g.slot(*const fn (*Com, ?*Com, ?*const anyopaque, u32) callconv(.winapi) void, VSSetShader)(g, r.quad_vs, null, 0);
-        g.slot(*const fn (*Com, ?*Com, ?*const anyopaque, u32) callconv(.winapi) void, PSSetShader)(g, if (pane) r.glass_ps else r.quad_ps, null, 0);
+        g.slot(*const fn (*Com, ?*Com, ?*const anyopaque, u32) callconv(.winapi) void, PSSetShader)(g, ps, null, 0);
         var inst = [1]?*Com{r.instance_srv};
         g.slot(*const fn (*Com, u32, u32, [*]const ?*Com) callconv(.winapi) void, VSSetShaderResources)(g, 0, 1, &inst);
         var views = [6]?*Com{ r.instance_srv, r.atlas_srv, r.images_srv, r.a.srv, r.native_atlas_srv, r.bound_texture };
@@ -405,91 +505,35 @@ pub const Renderer = struct {
         g.slot(*const fn (*Com, u32, u32, u32, u32) callconv(.winapi) void, DrawInstanced)(g, 4, @intCast(count), 0, 0);
     }
 
-    /// Pane `at`: its backdrop averaged and blurred from what was drawn,
-    /// then the pane itself over the frame.
-    fn drawPane(r: *Renderer, instances: []const gpu.Instance, at: usize, size: types.Size, scale: f32) void {
-        // Whatever happens below, the frame is bound again and its viewport set
-        // when this returns: a pane that cannot draw must never leave the
-        // renderer pointed at a backdrop texture, or every later instance is
-        // drawn where no one sees it.
+    /// Instances [first, first + count) with the quad vertex shader and `ps`
+    /// (an extended frame's plane, `d3d11_hdr.zig`).
+    pub fn drawWith(r: *Renderer, ps: *Com, size: types.Size, scale: f32, first: usize, count: usize) void {
         const g = r.context;
-        defer {
-            setViewport(g, @floatFromInt(r.frame_w), @floatFromInt(r.frame_h));
-            bindTarget(g, r.frame.rtv.?);
-            // The passes rebound the target, the vertex shader and its
-            // resources: `setState` puts back what the next quad draw needs.
-            r.setState();
-        }
-        const b = glass.backdropOf(instances[at].rect, instances[at].border_width, scale, r.frame_w, r.frame_h) orelse return;
-        const w: usize = @intCast(b.w);
-        const h: usize = @intCast(b.h);
-        r.a.reserve(r.device, w, h, false);
-        r.b.reserve(r.device, w, h, false);
-        if (r.a.rtv == null or r.a.srv == null or r.b.rtv == null or r.b.srv == null) return;
-        // The panes read what was drawn before them. Direct3D 11 leaves a
-        // texture's reads undefined while its render target view is bound, so
-        // the frame is copied first: `snap` is what `down_ps` samples. Its RTV
-        // is never bound, only its SRV is read.
-        r.snap.reserve(r.device, r.frame_w, r.frame_h, false);
-        if (r.snap.srv == null or r.snap.texture == null or r.frame.texture == null) return;
-        const frame_box: Box = .{ .right = @intCast(r.frame_w), .bottom = @intCast(r.frame_h) };
-        g.slot(*const fn (*Com, *Com, u32, u32, u32, u32, *Com, u32, ?*const Box) callconv(.winapi) void, CopySubresourceRegion)(g, r.snap.texture.?, 0, 0, 0, 0, r.frame.texture.?, 0, &frame_box);
-        // The passes read the frame's area in `down`-pixel squares and write
-        // `size` texels: both are the backdrop's, not the frame's.
-        const back: Params = .{
-            .area = b.area,
-            .down = @floatFromInt(b.down),
-            .frame_height = @intCast(r.frame_h),
-            .radius = b.radius,
-            .sigma = b.sigma,
-            .size = .{ @floatFromInt(b.w), @floatFromInt(b.h) },
-        };
-        r.pass(r.down_ps, r.snap.srv.?, r.a.rtv.?, back, b.w, b.h);
-        if (b.sigma > 0) {
-            var across = back;
-            across.dir = .{ 1, 0 };
-            r.pass(r.blur_ps, r.a.srv.?, r.b.rtv.?, across, b.w, b.h);
-            var down_dir = back;
-            down_dir.dir = .{ 0, 1 };
-            r.pass(r.blur_ps, r.b.srv.?, r.a.rtv.?, down_dir, b.w, b.h);
-        }
-        // The pane itself over the frame, reading `a` as its backdrop.
-        setViewport(g, @floatFromInt(r.frame_w), @floatFromInt(r.frame_h));
-        bindTarget(g, r.frame.rtv.?);
-        r.setBlend(true);
-        r.drawRange(true, size, scale, at, 1, .{
-            .origin = .{ @floatFromInt(b.area[0]), @floatFromInt(b.area[1]) },
-            .size = .{ @floatFromInt(b.w), @floatFromInt(b.h) },
-            .down = @floatFromInt(b.down),
-        });
-    }
-
-    /// One pass of a pane's backdrop: `ps` reading `src` into `dst`, the
-    /// whole target covered by one triangle.
-    fn pass(r: *Renderer, ps: *Com, src: *Com, dst: *Com, p: Params, w: i32, h: i32) void {
-        const g = r.context;
-        setViewport(g, @floatFromInt(w), @floatFromInt(h));
-        bindTarget(g, dst);
-        r.setBlend(false);
-        r.setParams(.{ .w = @floatFromInt(w), .h = @floatFromInt(h) }, 1, p);
-        g.slot(*const fn (*Com, ?*Com, ?*const anyopaque, u32) callconv(.winapi) void, VSSetShader)(g, r.pass_vs, null, 0);
+        r.setParams(size, scale, .{ .start_instance = @intCast(first) });
+        g.slot(*const fn (*Com, ?*Com, ?*const anyopaque, u32) callconv(.winapi) void, VSSetShader)(g, r.quad_vs, null, 0);
         g.slot(*const fn (*Com, ?*Com, ?*const anyopaque, u32) callconv(.winapi) void, PSSetShader)(g, ps, null, 0);
-        var srcs = [1]?*Com{src};
-        g.slot(*const fn (*Com, u32, u32, [*]const ?*Com) callconv(.winapi) void, PSSetShaderResources)(g, 0, 1, &srcs);
-        g.slot(*const fn (*Com, u32, u32) callconv(.winapi) void, Draw)(g, 3, 0);
+        var inst = [1]?*Com{r.instance_srv};
+        g.slot(*const fn (*Com, u32, u32, [*]const ?*Com) callconv(.winapi) void, VSSetShaderResources)(g, 0, 1, &inst);
+        var views = [6]?*Com{ r.instance_srv, r.atlas_srv, r.images_srv, r.a.srv, r.native_atlas_srv, r.bound_texture };
+        g.slot(*const fn (*Com, u32, u32, [*]const ?*Com) callconv(.winapi) void, PSSetShaderResources)(g, 0, 6, &views);
+        g.slot(*const fn (*Com, u32, u32, u32, u32) callconv(.winapi) void, DrawInstanced)(g, 4, @intCast(count), 0, 0);
     }
 
     /// Writes the frame's constants: the viewport in points and the scale,
     /// over whichever glass or pass parameters `extra` carries.
-    fn setParams(r: *Renderer, size: types.Size, scale: f32, extra: Params) void {
+    pub fn setParams(r: *Renderer, size: types.Size, scale: f32, extra: Params) void {
         const g = r.context;
         var p: Params = extra;
         p.viewport = .{ size.w, size.h };
         p.scale = scale;
-        p.rgb_text = if (r.rgb_text) 1 else 0;
+        p.rgb_text = if (!r.rgb_text) 0 else if (r.group_depth > 0) -1 else 1;
         p.gamma = r.text_params.gamma;
         p.contrast = r.text_params.contrast;
         p.grayscale_contrast = r.text_params.grayscale_contrast;
+        p.classic_gamma = r.classic_text_params.gamma;
+        p.classic_gray_gamma = r.classic_gray_params.gamma;
+        p.classic_contrast = r.classic_text_params.contrast;
+        p.classic_gray_contrast = r.classic_gray_params.grayscale_contrast;
         // A dynamic buffer is written by mapping it, one call each way; that is
         // what `D3D11_USAGE_DYNAMIC` is for.
         var mapped: Mapped = undefined;
@@ -533,13 +577,13 @@ pub const Renderer = struct {
 };
 
 /// Makes `rtv` the only render target of the next draws.
-fn bindTarget(context: *Com, rtv: *Com) void {
+pub fn bindTarget(context: *Com, rtv: *Com) void {
     var views = [1]?*Com{rtv};
     context.slot(*const fn (*Com, u32, [*]const ?*Com, ?*anyopaque) callconv(.winapi) void, OMSetRenderTargets)(context, 1, &views, null);
 }
 
 /// The one viewport the next draws cover: `w` × `h` pixels, top left.
-fn setViewport(context: *Com, w: f32, h: f32) void {
+pub fn setViewport(context: *Com, w: f32, h: f32) void {
     var vp = [1]Viewport{.{ .w = w, .h = h }};
     context.slot(*const fn (*Com, u32, [*]const Viewport) callconv(.winapi) void, RSSetViewports)(context, 1, &vp);
 }

@@ -21,11 +21,12 @@ pub const pages = [_][2][]const u8{
     .{ "Glass", "sparkles" },
     .{ "Motion", "wand.and.stars" },
     .{ "Kit", "square.grid.2x2" },
+    .{ "Studio", "rectangle.split.3x1" },
     .{ "Windows", "macwindow" },
 };
-const tiles = [pages.len]u24{ 0x0a84ff, 0x30d158, 0xff9f0a, 0x5e5ce6, 0x64d2ff, 0xff375f, 0xbf5af2, 0x8e8e93 };
+const tiles = [pages.len]u24{ 0x0a84ff, 0x30d158, 0xff9f0a, 0x5e5ce6, 0x64d2ff, 0xff375f, 0xbf5af2, 0x5ac8fa, 0x8e8e93 };
 /// A line under each page's name.
-const blurbs = [pages.len][]const u8{
+pub const blurbs = [pages.len][]const u8{
     "Buttons, toggles, sliders, fields",
     "A to-do list with checkboxes",
     "System text, weights, wrapping",
@@ -33,11 +34,12 @@ const blurbs = [pages.len][]const u8{
     "Liquid Glass bars, tabs, toasts",
     "Springs, staggers, shared elements",
     "Every nanoui.kit component",
+    "Dockable panes, canvas, transcript",
     "Window options, on Windows",
 };
 /// The chips, and which of them each page is under.
 const chips = [_][]const u8{ "All", "Widgets", "Effects", "Text" };
-const chip_of = [pages.len]usize{ 1, 1, 3, 1, 2, 2, 1, 1 };
+const chip_of = [pages.len]usize{ 1, 1, 3, 1, 2, 2, 1, 1, 1 };
 
 /// The phone's spacing and motion.
 const gutter = 24;
@@ -57,6 +59,9 @@ fn canvas(th: ui.Theme) ui.Color {
 }
 
 pub fn view(g: anytype, c: *ui.Context) void {
+    const mac = @import("builtin").os.tag == .macos;
+    if (mac) c.title_bar_height = 38;
+    const mac_top: f32 = if (mac) 28 else 0;
     const th = c.theme;
     const w = c.size.w;
     const root = ui.div(c).sizeFull().clip().bg(canvas(th));
@@ -80,7 +85,7 @@ pub fn view(g: anytype, c: *ui.Context) void {
             .shadow(.{ .color = .{ .a = if (th.dark) 0.5 else 0.12 }, .blur = 24, .x = -4 }).motion(f);
         defer screen.end();
         {
-            const bar = ui.div(c).row().wFull().px(gutter - 8).pt(8).gap(8).itemsCenter();
+            const bar = ui.div(c).row().wFull().px(gutter - 8).pt(8 + mac_top).gap(8).itemsCenter();
             defer bar.end();
             if (glassButton(c, "chevron.right", std.math.pi)) g.open = false;
         }
@@ -105,7 +110,8 @@ fn glassButton(c: *ui.Context, icon: []const u8, rotation: f32) bool {
 
 fn home(g: anytype, c: *ui.Context) void {
     const th = c.theme;
-    const sc = ui.div(c).column().sizeFull().scrollY().pt(16).pb(gutter);
+    const mac_top: f32 = if (@import("builtin").os.tag == .macos) 28 else 0;
+    const sc = ui.div(c).column().sizeFull().scrollY().pt(16 + mac_top).pb(gutter);
     defer sc.end();
     {
         const head = ui.div(c).column().wFull().px(gutter).gap(4);
@@ -182,7 +188,7 @@ fn home(g: anytype, c: *ui.Context) void {
 }
 
 /// A count beside a page, in the accent: tasks left, rows, the new page.
-fn badge(g: anytype, i: usize) ?[]const u8 {
+pub fn badge(g: anytype, i: usize) ?[]const u8 {
     const S = struct {
         var buf: [8]u8 = undefined;
     };

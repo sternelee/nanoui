@@ -184,6 +184,13 @@ averages and blurs what's under it, then shades it on the GPU, and the CPU
 renderer computes the same pixels. It looks the same on Linux and Windows,
 and a test checks the two renderers agree.
 
+`.glass(.{ .style = .sidebar })` adds progressive blur at the top and bottom
+and a subtle reflection of content on its right. Paint the content first,
+extending beneath the sidebar, then overlay the pane and its controls.
+`blur` sets the maximum blur (8 points), `edge_blur` its fade distance
+(64 points; 0 for uniform blur), and `reflection` its strength (0–1,
+default 0.16; 0 disables it). The Gallery's Glass page demonstrates it.
+
 <p align="center">
   <img src="docs/images/gallery-glass.png" alt="A toolbar of Liquid Glass over colored cards, with a tinted button and a pane of clear glass" width="640">
   <br><sub>The gallery's Glass page.</sub>
@@ -244,7 +251,8 @@ moved by `ui.motion`:
 - **Buttons** in its variants (primary, danger, ghost, outline, link, …) and
   sizes, with icons, loading and tooltips.
 - **Display:** tags, badges, avatars and stacks of them, alerts, skeletons,
-  spinners, progress bars and rings.
+  spinners, progress bars and rings, and [timeline rows](docs/kit-timeline.md)
+  with a decorative rail beside ordinary native content.
 - **Overlays:** tooltips, popovers, menus, dialogs, sheets and toasts. They
   open on layers over the page, go where they fit, and close on Escape or a
   click elsewhere.
@@ -522,6 +530,8 @@ Performance is measured headless with [`hillclimb/`](hillclimb/README.md): the s
 
 Release binaries are about 0.7 MB for nanoui and 11.8 MB for mygo. IPC (5000 sequential calls from the page to native code) took 493 ms with nanoui and 528 ms with mygo.
 
+Multi-platform `v0.14.7` measurements (macOS, iOS, iPadOS, CPU/Android, and Linux) and upcoming work are in [docs/benchmarks.md](docs/benchmarks.md) and [docs/roadmap.md](docs/roadmap.md).
+
 ### Build times
 
 A counter app each, from empty build caches, on the same M3 Ultra (`sh tools/buildperf.sh` measures it again: mygo's `examples/counter-native` with Go 1.27.1, nanoui's from `nui start` with Zig 0.17.0; network fetches aren't timed):
@@ -537,6 +547,9 @@ A counter app each, from empty build caches, on the same M3 Ultra (`sh tools/bui
 `build.zig` compiles nanoui's non-generic runtime (`src/rt.zig`: renderer, text shaping, layout, paint, platform backend) once into `libnanoui-rt.a`, so an edit in the app only recompiles the tiny app root and relinks in ~0.56 s.
 
 ## Development
+
+Enable local formatting and line-limit checks with `sh tools/install-hooks.sh`.
+The hooks check staged/pushed snapshots without restaging; see [Git hooks](docs/git-hooks.md).
 
 ```sh
 zig build lines                                                       # the 600-line limit, enforced
@@ -579,4 +592,4 @@ nanoui stands on the shoulders of these projects:
   That covers interruptible targets, presence, keyframes, stagger, layout
   animation, its exact springs and its easing curves.
 - **[GPUI Kit](https://github.com/longbridge/gpui-component)** by [Longbridge](https://github.com/longbridge): `nanoui.kit` follows its components, their variants and their names.
-<p align="center"><sub>Built in Zig 0.17 · <a href="https://discord.gg/EmTpv7rmTA">Discord</a> · <a href="AGENTS.md">AGENTS.md</a> · <a href="hillclimb/README.md">benchmarks</a> · <a href="LICENSE">MIT</a> · <a href="THIRD_PARTY_NOTICES.md">third-party notices</a></sub></p>
+<p align="center"><sub>Built in Zig 0.17 · <a href="https://discord.gg/EmTpv7rmTA">Discord</a> · <a href="AGENTS.md">AGENTS.md</a> · <a href="docs/benchmarks.md">benchmarks</a> · <a href="docs/roadmap.md">roadmap</a> · <a href="LICENSE">MIT</a> · <a href="THIRD_PARTY_NOTICES.md">third-party notices</a></sub></p>

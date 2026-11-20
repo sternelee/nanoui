@@ -242,8 +242,13 @@ pub const Glass = struct {
     style: Kind = .regular,
     /// Colors the glass toward this, by its alpha: a prominent button's.
     tint: Color = .transparent,
-    /// `frost`: how far it blurs, in points.
+    /// `frost` or `sidebar`: maximum blur, in points.
     blur: f32 = 8,
+    /// `sidebar`: distance from the top/bottom over which blur increases
+    /// from 35% to its maximum. Zero gives a uniform blur.
+    edge_blur: f32 = 64,
+    /// `sidebar`: strength (0–1) of the right-hand content's reflection.
+    reflection: f32 = 0.16,
 
     pub const Kind = enum {
         /// Frosts and lightens (darkens, in dark mode) what shows through,
@@ -254,6 +259,10 @@ pub const Glass = struct {
         /// Only blurs it by `blur`: no rim, no lens, no tone (a web page's
         /// `backdrop-filter`).
         frost,
+        /// A toned sidebar with progressive top/bottom blur, no lens or
+        /// rim, and a reflection across its right edge. Paint the content
+        /// first, extending it beneath the sidebar for live translucency.
+        sidebar,
     };
 };
 
@@ -383,6 +392,12 @@ pub const Style = struct {
     /// The indicator shows only while the box scrolls and a moment after,
     /// as macOS's overlay scrollers.
     scroll_bar_fades: bool = false,
+    /// When positive, the vertical scrollbar hides after this many idle seconds
+    /// following a scroll or thumb drag (independent of stationary hover).
+    scroll_bar_idle: f32 = 0,
+    /// Points of composited alpha ramp at hidden top/bottom edges of a
+    /// scrolling viewport (`scroll`).
+    scroll_edge_fade: f32 = 0,
     /// A box whose place down its parent changes from one layout to the
     /// next (a row above it gone) springs from where it was shown to where
     /// it is, as SwiftUI animates a stack's rows; its ancestors' offsets

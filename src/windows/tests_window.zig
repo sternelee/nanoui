@@ -105,6 +105,13 @@ test "a window that asks to be above the others is WS_EX_TOPMOST" {
     });
     const h = win.hwnd orelse return error.SkipZigTest;
     try testing.expect(exStyleOf(h) & w.WS_EX_TOPMOST != 0);
+    // And the style can step down and back up again at runtime — a
+    // background process's SetWindowPos ask is demoted, the style bit is
+    // what must change (`setAlwaysOnTop` sets it directly when it didn't).
+    win.setAlwaysOnTop(false);
+    try testing.expect(exStyleOf(h) & w.WS_EX_TOPMOST == 0);
+    win.setAlwaysOnTop(true);
+    try testing.expect(exStyleOf(h) & w.WS_EX_TOPMOST != 0);
 }
 
 const Veto = struct {
@@ -347,4 +354,31 @@ test "runSeconds hands the launch's URLs to on_open_urls, once" {
     try app.runSeconds(0.01);
     try testing.expectEqual(@as(usize, 1), Got.calls);
     try testing.expectEqualStrings("alchemist://open?project=1", Got.first[0..Got.len]);
+}
+
+test "should_terminate keeps the app running until it says yes" {
+    const gpa = testing.allocator;
+    const app = try makeApp(gpa);
+    defer app.destroy();
+    const Gate = struct {
+        allow: bool = false,
+        asked: u32 = 0,
+        fn should(ctx: ?*anyopaque) bool {
+            const g: *@This() = @ptrCast(@alignCast(ctx.?));
+            g.asked += 1;
+            return g.allow;
+        }
+    };
+    var g: Gate = .{};
+    app.options.ctx = &g;
+    app.options.should_terminate = Gate.should;
+    app.quit();
+    try testing.expectEqual(@as(u32, 1), g.asked);
+    try testing.expect(!app.stopping);
+    g.allow = true;
+    app.quit();
+    try testing.expectEqual(@as(u32, 2), g.asked);
+    try testing.expect(app.stopping);
+    app.quit();
+    try testing.expectEqual(@as(u32, 2), g.asked);
 }

@@ -7,14 +7,23 @@ const gtk = @import("gtk.zig");
 const App = @import("app.zig").App;
 const Surface = @import("surface.zig").Surface;
 const Page = @import("../page_webkitgtk.zig").Page;
+const page_request = @import("../page_request.zig");
 const window_types = @import("../window_types.zig");
 const ui = @import("../ui/ui.zig");
 
 pub const Asset = window_types.Asset;
 pub const PageOptions = window_types.PageOptions;
+pub const PageHeader = window_types.PageHeader;
+pub const PageRequest = window_types.PageRequest;
+pub const PageDropDecision = window_types.PageDropDecision;
+pub const PageDropPhase = window_types.PageDropPhase;
+pub const PageDropOffer = window_types.PageDropOffer;
+pub const PageDropEvent = window_types.PageDropEvent;
+pub const PageFileDrop = window_types.PageFileDrop;
 pub const Content = window_types.Content;
 pub const TitleBar = window_types.TitleBar;
 pub const Callback = window_types.Callback(Window);
+pub const ShouldClose = window_types.ShouldClose(Window);
 pub const Options = window_types.Options(Window);
 
 pub const NativeView = window_types.NativeView;
@@ -37,6 +46,7 @@ pub const Window = struct {
     theme: ?ui.Theme = null,
     title_bar: TitleBar = .default,
     on_close: ?Callback = null,
+    should_close: ?ShouldClose = null,
     closed: bool = false,
     full_screen: bool = false,
     title: [256:0]u8 = @splat(0),
@@ -47,7 +57,7 @@ pub const Window = struct {
         const g = &gtk.api;
         const self = try app.gpa.create(Window);
         errdefer app.gpa.destroy(self);
-        self.* = .{ .app = app, .gtkwindow = null, .title_bar = options.title_bar, .on_close = options.on_close, .width = options.width, .height = options.height, .theme = options.theme };
+        self.* = .{ .app = app, .gtkwindow = null, .title_bar = options.title_bar, .on_close = options.on_close, .should_close = options.should_close, .width = options.width, .height = options.height, .theme = options.theme };
         var page_options: ?PageOptions = null;
         switch (options.content) {
             .page => |p| page_options = p,
@@ -87,6 +97,11 @@ pub const Window = struct {
             gtk.v3.gtk_window_set_skip_pager_hint(win, 1);
         }
         gtk.connect(win, "destroy", @ptrCast(&onDestroy), self);
+        if (gtk.v4) {
+            gtk.connect(win, "close-request", @ptrCast(&onCloseRequest), self);
+        } else {
+            gtk.connect(win, "delete-event", @ptrCast(&onDeleteEvent), self);
+        }
         // The page fills the window. Without a WebKitGTK the app still opens,
         // and says what is missing where the page would have been.
         if (page_options) |p| {
@@ -156,6 +171,20 @@ pub const Window = struct {
         });
     }
 
+    fn onCloseRequest(_: *gtk.Widget, data: ?*anyopaque) callconv(.c) c_int {
+        const self: *Window = @ptrCast(@alignCast(data));
+        return @intFromBool(!self.canClose());
+    }
+
+    fn onDeleteEvent(win: *gtk.Widget, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) c_int {
+        return onCloseRequest(win, data);
+    }
+
+    fn canClose(self: *Window) bool {
+        if (self.should_close) |callback| return callback.func(callback.ctx, self);
+        return true;
+    }
+
     fn onDestroy(_: *gtk.Widget, data: ?*anyopaque) callconv(.c) void {
         const self: *Window = @ptrCast(@alignCast(data));
         self.finish();
@@ -176,6 +205,12 @@ pub const Window = struct {
     }
 
     pub fn close(self: *Window) void {
+        if (!self.canClose()) return;
+        self.destroyNow();
+    }
+
+    /// Final App teardown has already resolved pending close decisions.
+    pub fn destroyNow(self: *Window) void {
         // Destroying it calls `finish`, which frees it.
         if (self.gtkwindow) |win| {
             if (gtk.v4) gtk.v4api.gtk_window_destroy(win) else gtk.v3.gtk_widget_destroy(win);
@@ -319,6 +354,12 @@ pub const Window = struct {
     /// absolute `http(s)://` one. No effect on a native-UI window.
     pub fn setPageUrl(self: *Window, url: []const u8) void {
         if (self.page) |p| p.load(url);
+    }
+
+    /// Starts an explicit GET navigation with optional per-request headers.
+    pub fn loadPageRequest(self: *Window, req: PageRequest) page_request.Error!void {
+        const p = self.page orelse return error.NoPage;
+        return p.loadRequest(req);
     }
 
     /// Shows entry `i` of `PageOptions.pages` (the bar's buttons).

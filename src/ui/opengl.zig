@@ -51,6 +51,7 @@ pub const Renderer = struct {
     pane: u32,
     down: u32,
     blur: u32,
+    glass_failed: bool = false,
     vao: u32 = 0,
     /// For passes, which read no instances.
     empty_vao: u32 = 0,
@@ -61,6 +62,8 @@ pub const Renderer = struct {
     images: u32 = 0,
     images_generation: u64 = std.math.maxInt(u64),
     frame: Target = .{},
+    groups: std.ArrayList(Target) = .empty,
+    group_texture: u32 = 0,
     /// A pane's backdrop ends in `a`; `b` holds the blur between passes.
     a: Target = .{},
     b: Target = .{},
@@ -79,10 +82,9 @@ pub const Renderer = struct {
         const g = &gl.api;
         var r: Renderer = .{ .es = es, .quad = 0, .pane = 0, .down = 0, .blur = 0 };
         errdefer r.deinit();
+        // Compile only the main quad program up front; Liquid Glass programs
+        // are compiled lazily on the first glass pane (`ensureGlass`).
         r.quad = try program(es, "QUAD_VS", "QUAD_FS");
-        r.pane = try program(es, "QUAD_VS", "GLASS_FS");
-        r.down = try program(es, "PASS_VS", "DOWN_FS");
-        r.blur = try program(es, "PASS_VS", "BLUR_FS");
         g.glGenVertexArrays(1, &r.vao);
         g.glGenVertexArrays(1, &r.empty_vao);
         g.glGenBuffers(1, &r.vbo);
@@ -117,6 +119,8 @@ pub const Renderer = struct {
         if (r.vbo != 0) g.glDeleteBuffers(1, &r.vbo);
         for ([_]u32{ r.atlas, r.images }) |t| if (t != 0) g.glDeleteTextures(1, &t);
         r.frame.deinit();
+        for (r.groups.items) |*group| group.deinit();
+        r.groups.deinit(std.heap.page_allocator);
         r.a.deinit();
         r.b.deinit();
     }
@@ -165,19 +169,58 @@ pub const Renderer = struct {
             g.glBindBuffer(gl.ARRAY_BUFFER, r.vbo);
             g.glBufferData(gl.ARRAY_BUFFER, @intCast(instances.len * stride), instances.ptr, gl.STREAM_DRAW);
         }
-        var first: usize = 0;
-        while (first < instances.len) {
-            // What comes before the next pane, in one draw.
-            var end = first;
-            while (end < instances.len and instances[end].kind != gpu.Kind.glass) end += 1;
-            r.drawRange(r.quad, size, scale, first, end - first, time);
-            if (end == instances.len) break;
-            r.drawPane(instances, end, size, scale, time);
-            first = end + 1;
-        }
+        r.group_texture = 0;
+        r.drawSpan(instances, size, scale, 0, instances.len, 0, time, false);
         g.glBindFramebuffer(gl.READ_FRAMEBUFFER, r.frame.fbo);
         g.glBindFramebuffer(gl.DRAW_FRAMEBUFFER, target);
         g.glBlitFramebuffer(0, 0, @intCast(w), @intCast(h), 0, 0, @intCast(w), @intCast(h), gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    }
+
+    fn drawSpan(r: *Renderer, instances: []const gpu.Instance, size: types.Size, scale: f32, begin: usize, last: usize, depth: usize, time: f64, skip_glass: bool) void {
+        const g = &gl.api;
+        var first = begin;
+        while (first < last) {
+            var end = first;
+            while (end < last and instances[end].kind != gpu.Kind.glass and instances[end].kind != gpu.Kind.layer_begin) end += 1;
+            r.drawRange(r.quad, size, scale, first, end - first, time);
+            if (end == last) break;
+            if (instances[end].kind == gpu.Kind.glass) {
+                if (!skip_glass) r.drawPane(instances, end, size, scale, time);
+                first = end + 1;
+                continue;
+            }
+            const close = gpu.groupEnd(instances[0..last], end) orelse break;
+            const masked = instances[close].border_color[2] > 0 or instances[close].border_color[3] > 0;
+            if (!masked) {
+                var at = end + 1;
+                while (at < close) : (at += 1) {
+                    if (instances[at].kind == gpu.Kind.layer_begin) {
+                        at = gpu.groupEnd(instances[0..close], at) orelse break;
+                        continue;
+                    }
+                    if (instances[at].kind == gpu.Kind.glass) r.drawPane(instances, at, size, scale, time);
+                }
+            }
+            while (r.groups.items.len <= depth) r.groups.append(std.heap.page_allocator, .{}) catch return;
+            var group = r.groups.items[depth];
+            group.reserve(r.frame.w, r.frame.h, true, r.bgra());
+            const parent = r.frame;
+            r.frame = group;
+            r.group_texture = 0;
+            g.glActiveTexture(gl.TEXTURE0 + 2);
+            g.glBindTexture(gl.TEXTURE_2D, 0);
+            g.glBindFramebuffer(gl.FRAMEBUFFER, group.fbo);
+            g.glClearColor(0, 0, 0, 0);
+            g.glClear(gl.COLOR_BUFFER_BIT);
+            r.drawSpan(instances, size, scale, end + 1, close, depth + 1, time, !masked);
+            r.groups.items[depth] = r.frame;
+            r.frame = parent;
+            g.glBindFramebuffer(gl.FRAMEBUFFER, parent.fbo);
+            r.group_texture = group.texture;
+            r.drawRange(r.quad, size, scale, close, 1, time);
+            r.group_texture = 0;
+            first = close + 1;
+        }
     }
 
     /// The last frame's pixels: BGRA, premultiplied, top row first.
@@ -226,13 +269,40 @@ pub const Renderer = struct {
         g.glBlendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         bindTexture(prog, "atlas", 0, r.atlas);
         bindTexture(prog, "images", 1, r.images);
+        bindTexture(prog, "group_layer", 2, r.group_texture);
         g.glDrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, @intCast(count));
+    }
+
+    fn ensureGlass(r: *Renderer) bool {
+        if (r.pane != 0) return true;
+        if (r.glass_failed) return false;
+        const g = &gl.api;
+        r.pane = program(r.es, "QUAD_VS", "GLASS_FS") catch {
+            r.glass_failed = true;
+            return false;
+        };
+        r.down = program(r.es, "PASS_VS", "DOWN_FS") catch {
+            g.glDeleteProgram(r.pane);
+            r.pane = 0;
+            r.glass_failed = true;
+            return false;
+        };
+        r.blur = program(r.es, "PASS_VS", "BLUR_FS") catch {
+            g.glDeleteProgram(r.down);
+            g.glDeleteProgram(r.pane);
+            r.down = 0;
+            r.pane = 0;
+            r.glass_failed = true;
+            return false;
+        };
+        return true;
     }
 
     /// Pane `at`: its backdrop from what was drawn, then the pane.
     fn drawPane(r: *Renderer, instances: []const gpu.Instance, at: usize, size: types.Size, scale: f32, time: f64) void {
+        if (!r.ensureGlass()) return;
         const g = &gl.api;
-        const b = glass.backdropOf(instances[at].rect, instances[at].border_width, scale, r.frame.w, r.frame.h) orelse return;
+        const b = glass.backdropFor(instances[at], scale, r.frame.w, r.frame.h) orelse return;
         const w: usize = @intCast(b.w);
         const h: usize = @intCast(b.h);
         r.a.reserve(w, h, false, r.bgra());
@@ -248,6 +318,7 @@ pub const Renderer = struct {
             g.glUseProgram(r.blur);
             g.glUniform1i(g.glGetUniformLocation(r.blur, "radius"), b.radius);
             g.glUniform1f(g.glGetUniformLocation(r.blur, "sigma"), b.sigma);
+            g.glUniform4f(g.glGetUniformLocation(r.blur, "progressive"), b.progressive[0], b.progressive[1], b.progressive[2], 0);
             g.glUniform2i(g.glGetUniformLocation(r.blur, "dir"), 1, 0);
             pass(r.blur, r.a.texture, &r.b, b, w, h);
             g.glUniform2i(g.glGetUniformLocation(r.blur, "dir"), 0, 1);

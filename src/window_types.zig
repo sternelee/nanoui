@@ -9,16 +9,42 @@ pub const Asset = struct {
     mime: ?[]const u8 = null,
 };
 
+/// One HTTP header attached to an explicit `PageRequest` (`Window.loadPageRequest`).
+pub const PageHeader = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+/// An HTTP(S) GET navigation (or asset path load) with per-navigation request
+/// headers supplied by the application. Headers are scoped to this request and
+/// stripped on cross-origin redirects; they never apply to subresources or later
+/// unrelated navigations. On Windows WebView2, `Cookie` headers are restricted
+/// by `NavigateWithWebResourceRequest`.
+pub const PageRequest = struct {
+    url: []const u8,
+    headers: []const PageHeader = &.{},
+};
+
 pub const PageOptions = struct {
     /// Relative URLs resolve against `nanoui://localhost/`, served from
     /// `assets`; absolute URLs (`http://localhost:5173`) load as is.
     url: []const u8 = "/",
     assets: []const Asset = &.{},
+    /// Leave the newly created page idle without automatically navigating to
+    /// `url`; the application starts navigation later with `loadPageRequest` or
+    /// `setPageUrl` / `Page.load`.
+    defer_initial_load: bool = false,
     /// A name the app gives the page ("motion-code"), carried by every call
     /// it makes (`Call.label`) so a service can tell its pages apart.
     label: []const u8 = "",
     /// Web Inspector (right click > Inspect Element).
     inspectable: bool = true,
+    /// Nothing the page stores outlives it: no cookies, storage or cache
+    /// kept, or shared with the app's other pages. macOS: a non-persistent
+    /// `WKWebsiteDataStore` (set before `configure`, which may change it);
+    /// Windows: an InPrivate controller (a runtime without
+    /// `ICoreWebView2Environment10` makes none, and the page stays blank).
+    private: bool = false,
     /// Pages the window can switch between, shown as a bar on every one of
     /// them (the app's own and every remote page): `{ "Local", "/" }`,
     /// `{ "Docs", "https://example.com/" }`. Empty: no bar.
@@ -37,6 +63,54 @@ pub const PageOptions = struct {
     /// process pool, data store, extra script handlers.
     configure: ?*const fn (ctx: ?*anyopaque, config: *anyopaque) void = null,
     configure_ctx: ?*anyopaque = null,
+    /// Asked before every request that is not for the app's own assets,
+    /// from any frame (a sandboxed iframe's too): false answers it with a
+    /// 403, so it never leaves the machine. Windows, through WebView2's
+    /// `WebResourceRequested`, which is raised for no WebSocket; a runtime
+    /// without `ICoreWebView2_22` (filters for every frame) does not load
+    /// the page. macOS has no per-request hook: give the configuration a
+    /// `WKContentRuleList` from `configure` instead.
+    allow_request: ?*const fn (ctx: ?*anyopaque, url: []const u8) bool = null,
+    allow_request_ctx: ?*anyopaque = null,
+    /// Called on the UI thread if a page navigation fails (e.g. network error
+    /// or unsupported custom-header runtime path). Not invoked for intentional
+    /// cancellation caused by replacing a load or closing the window.
+    on_load_error: ?*const fn (ctx: ?*anyopaque, url: []const u8, message: []const u8) void = null,
+    on_load_error_ctx: ?*anyopaque = null,
+    /// Opt-in host file-drop callbacks over webview content (`null` preserves
+    /// default browser drag/drop behavior).
+    file_drop: ?PageFileDrop = null,
+};
+
+/// Host routing decision returned from `PageFileDrop.on_offer`.
+pub const PageDropDecision = enum { webview, host, reject };
+
+/// Hover phase reported to `PageFileDrop.on_offer`.
+pub const PageDropPhase = enum { enter, update };
+
+/// Hover offer passed to `PageFileDrop.on_offer`. `urls` is valid only until
+/// the callback returns and contains normalized `file://` URLs.
+pub const PageDropOffer = struct {
+    phase: PageDropPhase,
+    x: f64,
+    y: f64,
+    urls: []const []const u8,
+};
+
+/// Committed file drop delivered to `PageFileDrop.on_drop`. `urls` is valid only
+/// until the callback returns; copy any strings retained beyond return.
+pub const PageDropEvent = struct {
+    x: f64,
+    y: f64,
+    urls: []const []const u8,
+};
+
+/// Host file-drop interception configuration for `PageOptions.file_drop`.
+pub const PageFileDrop = struct {
+    ctx: ?*anyopaque = null,
+    on_offer: ?*const fn (ctx: ?*anyopaque, offer: PageDropOffer) PageDropDecision = null,
+    on_drop: *const fn (ctx: ?*anyopaque, event: PageDropEvent) bool,
+    on_cancel: ?*const fn (ctx: ?*anyopaque) void = null,
 };
 
 /// One entry of `PageOptions.pages`.
@@ -158,10 +232,11 @@ pub fn Options(comptime Window: type) type {
         title_bar: TitleBar = .default,
         /// With `title_bar = .hidden`, macOS: where the close button's center
         /// goes, from the window's top left, the title bar grown to twice
-        /// `y` to hold it; the other two follow at AppKit's spacing. Lets a
-        /// view's own taller top bar (`ui.Context.title_bar_height`) line up
-        /// with them. Null leaves them where AppKit puts them; other systems
-        /// have none to move.
+        /// `y` to hold it; the other two follow at AppKit's spacing. Native
+        /// views also center the lights automatically in `ui.Context.title_bar_height`
+        /// (or place them explicitly with `ui.Context.traffic_lights`). When
+        /// both are left default, AppKit keeps its standard placement; other
+        /// systems have none to move.
         traffic_lights: ?ui.Point = null,
         /// Whether the window has a title bar and a resizable frame at all.
         /// `false` is a borderless window: no title bar, no border and no

@@ -122,7 +122,7 @@ src/ui/tt/            TrueType: font files, the installed fonts, outlines to cov
 src/ui/font_registry.zig  fonts an app brings, by family, weight, style and range
 src/ui/text_stack_*.zig   a text's fonts when it names families (`TextStyle.family`)
 src/ui/atlas_tt.zig   the glyph atlas in memory; icons.zig: line icons
-src/ui/raster.zig     the CPU renderer (same pixels as shader.metal)
+src/ui/raster.zig     the CPU renderer (same pixels as shader.metal); raster_glyph.zig: its text quads
 src/ui/canvas.zig     a CPU-drawn window's pixels: only what a frame changed is drawn
 src/ui/opengl.zig     the OpenGL 3.3 renderer (Linux), and OpenGL ES 3's (Android); shader.glsl: both Metal shaders in GLSL
 src/ui/d3d11.zig      the Direct3D 11 renderer (Windows), shader.hlsl; d3d11_texture: ui.texture's slots;
@@ -172,6 +172,7 @@ apps/nanocua/         computer use for agents: MCP over a socket, the accessibil
 site/                 the website (its own repo): Next.js on Cloudflare Workers, a gallery
 tools/lines.zig       the 600-line check
 tools/version.sh      set or check the version (build.zig.zon) for a release
+.agents/skills/nanoui-app/  how to build, test and ship a full app on nanoui (from Harness)
 .github/workflows/    CI (tests on macOS and Linux) and releases from v* tags
 ```
 
@@ -204,6 +205,13 @@ zig-out/bin/hello --nanoui-eval='nanoui.call("Greeter.greet","Ada").then(v=>{nan
 
 ## Conventions
 
+- A **hotfix update** is a focused patch release on the current major/minor
+  version. Increment the final component of `major.minor.patch` by one
+  (`0.14.1` → `0.14.2`, a `+0.0.1` bump).
+  Set it with `sh tools/version.sh`, run the relevant tests and platform
+  checks, merge only after CI is green, then push the matching `v<version>`
+  tag from the merged commit. Wait for the Release workflow to publish and
+  verify the GitHub release before calling the hotfix shipped.
 - New widgets are made of boxes (`Context.open`/`leaf`) styled from the
   theme and animated with `Context.animate`; a widget whose interaction
   changes app state sets `c.changed` so the frame is built again.

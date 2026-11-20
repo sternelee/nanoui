@@ -169,6 +169,13 @@ pub const TextureFormat = @import("gpu.zig").Format;
 pub const VideoRange = @import("gpu.zig").Range;
 pub const VideoMatrix = @import("gpu.zig").Matrix;
 pub const VideoTransfer = @import("gpu.zig").Transfer;
+/// What an app's RGB texture already is (`Texture.encoding`), for apps
+/// that manage colour themselves.
+pub const TextureEncoding = @import("gpu.zig").Encoding;
+/// What a window's surface shows (`Surface.setColour`), and what the display
+/// under it can show (`Context.display_info`).
+pub const SurfaceColour = @import("gpu.zig").SurfaceColour;
+pub const DisplayInfo = @import("gpu.zig").DisplayInfo;
 /// A 3D LUT for a texture's colour stage (`ui.lut`).
 pub const Lut = @import("gpu.zig").Lut;
 pub const lut = @import("ui_gpu.zig").lut;
@@ -284,6 +291,10 @@ pub const raster = @import("raster.zig");
 pub const View = struct {
     ptr: *anyopaque,
     build: *const fn (ptr: *anyopaque, c: *Context) void,
+    /// Called once after a completed CPU frame, including retained scroll
+    /// frames. Does not imply GPU completion or presentation; must not
+    /// mutate the UI tree.
+    after_frame: ?*const fn (ptr: *anyopaque, c: *Context) void = null,
 
     /// `View.init(&state, State.view)` where `fn view(s: *State, c: *ui.Context) void`.
     pub fn init(ptr: anytype, comptime build_fn: fn (@TypeOf(ptr), *Context) void) View {
@@ -316,6 +327,8 @@ test {
     _ = @import("tests_field_layout.zig");
     _ = frame_log;
     _ = @import("present_slots.zig");
+    // The disk format and temporary-directory cache tests need no D3D device.
+    _ = @import("d3d11_shader_cache.zig");
     _ = @import("tests_effects.zig");
     _ = @import("tests_scroll_x.zig");
     _ = @import("tests_a11y_adjust.zig");
@@ -324,6 +337,7 @@ test {
     _ = @import("tests_shadow_x.zig");
     _ = @import("tests_text_style.zig");
     _ = @import("tests_text_extras.zig");
+    _ = @import("tests_text_lifetime.zig");
     _ = @import("tests_turn.zig");
     _ = @import("tests_transform.zig");
     _ = @import("tests_settle.zig");
@@ -355,6 +369,8 @@ test {
     _ = @import("tests_texture_affine.zig");
     _ = @import("tests_texture_color.zig");
     _ = @import("tests_lut.zig");
+    _ = @import("tests_texture_encoding.zig");
+    _ = @import("tests_hdr_surface.zig");
     _ = @import("tests_gpu_hook.zig");
     _ = @import("color.zig");
     _ = @import("ui_gpu.zig");
@@ -377,8 +393,13 @@ test {
     }
     _ = @import("raster.zig");
     _ = @import("tests_raster.zig");
+    _ = @import("tests_raster_groups.zig");
+    _ = @import("raster_group.zig");
     _ = @import("glass.zig");
     _ = @import("tests_glass.zig");
+    _ = @import("scroll_fade.zig");
+    _ = @import("tests_scroll_fade.zig");
+    _ = @import("tests_scroll_polish.zig");
     _ = @import("tests_overlay_bar.zig");
     _ = @import("tests_border.zig");
     _ = @import("tests_scrollbar.zig");
@@ -395,6 +416,7 @@ test {
     _ = @import("gif_decode.zig");
     _ = @import("images.zig");
     _ = @import("tests_images.zig");
+    if (!@import("text.zig").portable) _ = @import("tests_image_orientation.zig");
     _ = @import("pacing.zig");
     _ = @import("svg.zig");
     _ = @import("tests_svg.zig");
@@ -407,15 +429,21 @@ test {
     if (@import("builtin").os.tag == .windows) _ = @import("d3d11_device.zig");
     if (@import("builtin").os.tag == .windows) _ = @import("d3d11_video.zig");
     if (@import("builtin").os.tag == .windows) _ = @import("d3d11_texture.zig");
+    // An extended (scRGB) frame: the compose and the plane (Windows only).
+    if (@import("builtin").os.tag == .windows) _ = @import("tests_d3d11_hdr.zig");
+    if (@import("builtin").os.tag == .windows) _ = @import("d3d11_hdr.zig");
     _ = @import("icons.zig");
     _ = @import("frame_pace.zig");
     _ = keys;
     _ = @import("tests_textedit.zig");
     _ = @import("tests_field.zig");
+    _ = @import("text_selection.zig");
+    _ = @import("tests_text_selection.zig");
     _ = @import("tests_input.zig");
     _ = @import("tests_key_up.zig");
     _ = @import("tests_backtab.zig");
     _ = @import("retain.zig");
+    _ = @import("tests_after_frame.zig");
     if (@import("builtin").os.tag == .macos) {
         _ = @import("tests_menu.zig");
         _ = @import("tests_a11y.zig");
