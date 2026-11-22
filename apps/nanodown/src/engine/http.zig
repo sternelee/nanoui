@@ -91,10 +91,10 @@ fn settle(gpa: std.mem.Allocator, url: []const u8) ![]u8 {
 }
 
 /// The browser's own user agent: sites serve a plain client differently.
-pub const user_agent = http.Header{ .name = "User-Agent", .value = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" };
+pub const user_agent = http.Header{ .name = "User-Agent", .value = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" };
 
 /// Asks what a URL is, with a HEAD, falling back to a one-byte ranged GET
-/// when the server refuses HEAD.
+/// when the server refuses HEAD (405, 501, 404 on CDNs like Bilibili, or 0).
 pub fn probe(gpa: std.mem.Allocator, url: []const u8, referer: []const u8) Probe {
     var headers: [3]http.Header = undefined;
     var n: usize = 0;
@@ -112,8 +112,8 @@ pub fn probe(gpa: std.mem.Allocator, url: []const u8, referer: []const u8) Probe
 
     var out: Probe = .{ .status = r.status(), .gpa = gpa };
     out.url = gpa.dupe(u8, url) catch "";
-    if (r.status() == 405 or r.status() == 501 or r.status() == 0) {
-        // HEAD refused: a one-byte GET tells the same, and proves ranges.
+    if (r.status() != 200 and r.status() != 206) {
+        // HEAD refused or unsupported: a one-byte GET tells the same, and proves ranges.
         var extra: [4]http.Header = undefined;
         @memcpy(extra[0..n], headers[0..n]);
         extra[n] = .{ .name = "Range", .value = "bytes=0-0" };
@@ -126,7 +126,11 @@ pub fn probe(gpa: std.mem.Allocator, url: []const u8, referer: []const u8) Probe
         } else if (r2.status() == 200) {
             if (r2.header("content-length")) |cl| out.size = std.fmt.parseInt(u64, cl, 10) catch 0;
         }
-        if (r2.err().len > 0) out.problem = gpa.dupe(u8, r2.err()) catch "";
+        if (r2.status() != 200 and r2.status() != 206) {
+            out.problem = gpa.dupe(u8, if (r2.err().len > 0) r2.err() else "the server said no") catch "";
+        } else if (r2.err().len > 0) {
+            out.problem = gpa.dupe(u8, r2.err()) catch "";
+        }
         if (r2.header("content-type")) |ct| out.mime = gpa.dupe(u8, ct) catch "";
         if (nameOf(r2)) |nm| out.name = gpa.dupe(u8, nm) catch "";
         return out;

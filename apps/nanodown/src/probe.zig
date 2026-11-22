@@ -42,8 +42,16 @@ pub fn main(init: std.process.Init) !void {
         var dest_buf: [1024]u8 = undefined;
         const dest = std.fmt.bufPrint(&dest_buf, "{s}/{s}", .{ get_dir, "probe-out" }) catch return;
         var shared = job.Shared{};
-        job.run(.{ .gpa = gpa, .url = m.url, .referer = m.url, .format = f, .dest = dest, .ext = f.ext }, &shared);
-        try o.print("get: ok={} stage={d} problem={s}\n", .{ shared.ok.load(.acquire), shared.stage.load(.acquire), shared.why() });
+        job.run(.{
+            .gpa = gpa,
+            .url = m.url,
+            .referer = m.url,
+            .format = f,
+            .dest = dest,
+            .ext = f.ext,
+            .tags = .{ .title = m.title, .artist = m.author, .date = m.date, .link = m.url },
+        }, &shared);
+        try o.print("get: ok={} stage={d} wrote={s} problem={s}\n", .{ shared.ok.load(.acquire), shared.stage.load(.acquire), shared.wrote(), shared.why() });
     }
     try o.flush();
 }

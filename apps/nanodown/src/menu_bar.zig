@@ -3,6 +3,7 @@
 //! everything.
 const nanoui = @import("nanoui");
 const App = @import("app.zig").App;
+const capture_flow = @import("capture_flow.zig");
 
 const MenuItem = nanoui.MenuItem;
 
@@ -16,8 +17,7 @@ fn downloadCopied(a: *App, _: *nanoui.menu.Item) void {
 }
 
 fn openBrowser(a: *App, _: *nanoui.menu.Item) void {
-    _ = a;
-    _ = nanoui.shell.openUrl("https://github.com/sternelee/nanoui");
+    capture_flow.openBrowser(a, null);
 }
 
 fn pauseAll(a: *App, _: *nanoui.menu.Item) void {

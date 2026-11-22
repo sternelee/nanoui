@@ -51,19 +51,7 @@ pub const Library = struct {
     }
 
     pub fn deinit(l: *Library) void {
-        for (l.items.items) |d| {
-            l.gpa.free(d.url);
-            l.gpa.free(d.media);
-            l.gpa.free(d.title);
-            l.gpa.free(d.author);
-            l.gpa.free(d.quality);
-            l.gpa.free(d.ext);
-            l.gpa.free(d.path);
-            l.gpa.free(d.thumb);
-            l.gpa.free(d.date);
-            l.gpa.free(d.problem);
-            l.gpa.free(d.stage);
-        }
+        for (l.items.items) |*d| d.deinit(l.gpa);
         l.items.deinit(l.gpa);
     }
 
@@ -72,17 +60,18 @@ pub const Library = struct {
         var copy = d;
         copy.id = l.next_id;
         l.next_id += 1;
-        copy.url = try l.gpa.dupe(u8, d.url);
-        copy.media = try l.gpa.dupe(u8, d.media);
-        copy.title = try l.gpa.dupe(u8, d.title);
-        copy.author = try l.gpa.dupe(u8, d.author);
-        copy.quality = try l.gpa.dupe(u8, d.quality);
-        copy.ext = try l.gpa.dupe(u8, d.ext);
-        copy.path = try l.gpa.dupe(u8, d.path);
-        copy.thumb = try l.gpa.dupe(u8, d.thumb);
-        copy.date = try l.gpa.dupe(u8, d.date);
-        copy.problem = try l.gpa.dupe(u8, d.problem);
-        copy.stage = try l.gpa.dupe(u8, d.stage);
+        copy.url = try dupOpt(l.gpa, d.url);
+        copy.media = try dupOpt(l.gpa, d.media);
+        copy.audio_url = try dupOpt(l.gpa, d.audio_url);
+        copy.title = try dupOpt(l.gpa, d.title);
+        copy.author = try dupOpt(l.gpa, d.author);
+        copy.quality = try dupOpt(l.gpa, d.quality);
+        copy.ext = try dupOpt(l.gpa, d.ext);
+        copy.path = try dupOpt(l.gpa, d.path);
+        copy.thumb = try dupOpt(l.gpa, d.thumb);
+        copy.date = try dupOpt(l.gpa, d.date);
+        copy.problem = try dupOpt(l.gpa, d.problem);
+        copy.stage = try dupOpt(l.gpa, d.stage);
         copy.gpa = l.gpa;
         try l.items.append(l.gpa, copy);
         return &l.items.items[l.items.items.len - 1];
@@ -102,18 +91,8 @@ pub const Library = struct {
 
     /// Takes one off the list; the file stays.
     pub fn remove(l: *Library, id: u64) void {
-        for (l.items.items, 0..) |d, i| if (d.id == id) {
-            l.gpa.free(d.url);
-            l.gpa.free(d.media);
-            l.gpa.free(d.title);
-            l.gpa.free(d.author);
-            l.gpa.free(d.quality);
-            l.gpa.free(d.ext);
-            l.gpa.free(d.path);
-            l.gpa.free(d.thumb);
-            l.gpa.free(d.date);
-            l.gpa.free(d.problem);
-            l.gpa.free(d.stage);
+        for (l.items.items, 0..) |*d, i| if (d.id == id) {
+            d.deinit(l.gpa);
             _ = l.items.orderedRemove(i);
             if (l.selected) |s| {
                 if (s == i) l.selected = null else if (s > i) l.selected = s - 1;
@@ -240,6 +219,8 @@ pub const Library = struct {
             try jsonString(w, d.url);
             try w.writeAll(",\"media\":");
             try jsonString(w, d.media);
+            try w.writeAll(",\"audio_url\":");
+            try jsonString(w, d.audio_url);
             try w.writeAll(",\"title\":");
             try jsonString(w, d.title);
             try w.writeAll(",\"site\":");
@@ -293,18 +274,19 @@ pub const Library = struct {
             if (it != .object) continue;
             const o = it.object;
             var d: Download = .{ .gpa = l.gpa };
-            d.url = try l.gpa.dupe(u8, str(o.get("url")));
-            d.media = try l.gpa.dupe(u8, str(o.get("media")));
-            d.title = try l.gpa.dupe(u8, str(o.get("title")));
+            d.url = try dupOpt(l.gpa, str(o.get("url")));
+            d.media = try dupOpt(l.gpa, str(o.get("media")));
+            d.audio_url = try dupOpt(l.gpa, str(o.get("audio_url")));
+            d.title = try dupOpt(l.gpa, str(o.get("title")));
             d.site = siteOf(str(o.get("site")));
-            d.author = try l.gpa.dupe(u8, str(o.get("author")));
-            d.quality = try l.gpa.dupe(u8, str(o.get("quality")));
-            d.ext = try l.gpa.dupe(u8, str(o.get("ext")));
-            d.path = try l.gpa.dupe(u8, str(o.get("path")));
-            d.thumb = try l.gpa.dupe(u8, str(o.get("thumb")));
-            d.date = try l.gpa.dupe(u8, str(o.get("date")));
-            d.problem = try l.gpa.dupe(u8, str(o.get("problem")));
-            d.stage = try l.gpa.dupe(u8, "");
+            d.author = try dupOpt(l.gpa, str(o.get("author")));
+            d.quality = try dupOpt(l.gpa, str(o.get("quality")));
+            d.ext = try dupOpt(l.gpa, str(o.get("ext")));
+            d.path = try dupOpt(l.gpa, str(o.get("path")));
+            d.thumb = try dupOpt(l.gpa, str(o.get("thumb")));
+            d.date = try dupOpt(l.gpa, str(o.get("date")));
+            d.problem = try dupOpt(l.gpa, str(o.get("problem")));
+            d.stage = "";
             if (o.get("duration")) |v| {
                 if (v == .float) d.duration = v.float;
                 if (v == .integer) d.duration = @floatFromInt(v.integer);
@@ -338,6 +320,10 @@ pub const Library = struct {
         }
     }
 };
+
+fn dupOpt(gpa: std.mem.Allocator, s: []const u8) ![]const u8 {
+    return if (s.len == 0) "" else try gpa.dupe(u8, s);
+}
 
 fn str(v: ?std.json.Value) []const u8 {
     const val = v orelse return "";
@@ -474,4 +460,17 @@ test "a failure's reason survives a save and a load" {
     try std.testing.expectEqual(@as(usize, 1), back.items.items.len);
     // Without this the row says "Failed" and nothing else after a restart.
     try std.testing.expectEqualStrings("this stream is DRM-protected", back.items.items[0].problem);
+}
+
+test "a download whose stage was updated to a literal can be removed safely" {
+    const gpa = std.testing.allocator;
+    var lib = Library.init(gpa);
+    defer lib.deinit();
+    const d = try lib.add(.{ .gpa = gpa, .url = "https://x.com/b", .title = "B" });
+    download.Download.setOwned(&d.stage, gpa, "Finishing");
+    download.Download.setOwned(&d.stage, gpa, "Merging");
+    download.Download.setOwned(&d.stage, gpa, "");
+    download.Download.setOwned(&d.stage, gpa, "Finishing");
+    lib.remove(d.id);
+    try std.testing.expectEqual(@as(usize, 0), lib.items.items.len);
 }

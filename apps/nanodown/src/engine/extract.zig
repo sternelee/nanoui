@@ -26,7 +26,6 @@ pub fn read(gpa: std.mem.Allocator, url: []const u8, max_height: u32) !media.Med
     // Every string in a `Media` is the caller's to free: it owns its own.
     var m: media.Media = .{ .url = try gpa.dupe(u8, url), .site = media.Site.ofUrl(url) };
     errdefer m.deinit(gpa);
-    const host = pg.hostOf(url);
 
     // A link straight to a playlist is the whole video: no page to read.
     // A master playlist is read for its renditions, so the list holds real
@@ -84,12 +83,22 @@ pub fn read(gpa: std.mem.Allocator, url: []const u8, max_height: u32) !media.Med
     }
     defer page.deinit();
 
-    // What the page says about itself.
-    m.title = try gpa.dupe(u8, pg.meta(page.body(), "og:title") orelse pg.meta(page.body(), "twitter:title") orelse pg.titleTag(page.body()) orelse httpz.nameFromUrl(url));
-    m.author = try gpa.dupe(u8, pg.meta(page.body(), "og:site_name") orelse "");
-    m.description = try gpa.dupe(u8, pg.meta(page.body(), "og:description") orelse "");
+    // `url` may be a redirect target (e.g. `b23.tv/...` -> `www.bilibili.com/video/BV...`).
+    const final_url = if (page.url().len > 0) page.url() else url;
+    if (!std.mem.eql(u8, final_url, m.url)) {
+        gpa.free(m.url);
+        m.url = try gpa.dupe(u8, final_url);
+        m.site = media.Site.ofUrl(final_url);
+    }
+    const final_host = pg.hostOf(final_url);
+
+    // What the page says about itself, with HTML entities decoded.
+    const raw_title = pg.meta(page.body(), "og:title") orelse pg.meta(page.body(), "twitter:title") orelse pg.titleTag(page.body()) orelse httpz.nameFromUrl(final_url);
+    m.title = try pg.decodeHtml(gpa, raw_title);
+    m.author = try pg.decodeHtml(gpa, pg.meta(page.body(), "og:site_name") orelse "");
+    m.description = try pg.decodeHtml(gpa, pg.meta(page.body(), "og:description") orelse "");
     const thumb_ref = pg.meta(page.body(), "og:image") orelse pg.meta(page.body(), "twitter:image") orelse "";
-    const thumb_abs = try pg.absolute(gpa, url, thumb_ref);
+    const thumb_abs = try pg.absolute(gpa, final_url, thumb_ref);
     defer gpa.free(thumb_abs);
     m.thumb = try gpa.dupe(u8, thumb_abs);
     if (pg.meta(page.body(), "og:video:duration")) |d| m.duration = std.fmt.parseFloat(f64, d) catch 0;
@@ -100,7 +109,7 @@ pub fn read(gpa: std.mem.Allocator, url: []const u8, max_height: u32) !media.Med
     // The site's own patterns, which know more than the metadata does.
     var formats: std.ArrayList(media.Format) = .empty;
     defer formats.deinit(gpa);
-    sites.siteFormats(gpa, host, url, page.body(), &formats) catch |e| switch (e) {
+    sites.siteFormats(gpa, final_host, final_url, page.body(), &formats) catch |e| switch (e) {
         error.Drm => {
             m.problem = try gpa.dupe(u8, "DRM-protected, so its samples cannot be decrypted");
             return m;
@@ -109,7 +118,7 @@ pub fn read(gpa: std.mem.Allocator, url: []const u8, max_height: u32) !media.Med
     };
 
     // Then whatever the markup plays.
-    if (formats.items.len == 0) try markupFormats(gpa, url, page.body(), &formats);
+    if (formats.items.len == 0) try markupFormats(gpa, final_url, page.body(), &formats);
 
     // A manifest is read for its qualities, so the list is real ones.
     var expanded: std.ArrayList(media.Format) = .empty;
@@ -125,6 +134,7 @@ pub fn read(gpa: std.mem.Allocator, url: []const u8, max_height: u32) !media.Med
             gpa.free(f.label);
             gpa.free(f.ext);
             gpa.free(f.url);
+            gpa.free(f.audio_url);
             gpa.free(f.codec);
             switch (man) {
                 .hls => |u| gpa.free(u),
@@ -154,6 +164,9 @@ fn isPlaylist(url: []const u8) bool {
 fn better(_: void, a: media.Format, b: media.Format) bool {
     if (a.kind != b.kind) return @intFromEnum(a.kind) < @intFromEnum(b.kind);
     if (a.height != b.height) return a.height > b.height;
+    const a_avc = std.mem.indexOf(u8, a.codec, "avc1") != null;
+    const b_avc = std.mem.indexOf(u8, b.codec, "avc1") != null;
+    if (a_avc != b_avc) return a_avc;
     return a.bitrate > b.bitrate;
 }
 
@@ -177,16 +190,23 @@ pub fn fetch(gpa: std.mem.Allocator, url: []const u8, referer: []const u8) http.
 /// manifest URL sitting in a script.
 fn markupFormats(gpa: std.mem.Allocator, base: []const u8, body: []const u8, out: *std.ArrayList(media.Format)) !void {
     // A manifest first: it holds every quality.
-    if (pg.findAnyUrl(body, ".m3u8")) |u| {
+    if (pg.findAnyUrl(body, ".m3u8")) |raw| {
+        const u = try pg.unescape(gpa, raw);
+        defer gpa.free(u);
         try out.append(gpa, .{ .id = try gpa.dupe(u8, "hls"), .label = try gpa.dupe(u8, "Auto"), .ext = try gpa.dupe(u8, "mp4"), .manifest = .{ .hls = try pg.absolute(gpa, base, u) }, .kind = .video });
     }
-    if (pg.findAnyUrl(body, ".mpd")) |u| {
+    if (pg.findAnyUrl(body, ".mpd")) |raw| {
+        const u = try pg.unescape(gpa, raw);
+        defer gpa.free(u);
         try out.append(gpa, .{ .id = try gpa.dupe(u8, "dash"), .label = try gpa.dupe(u8, "Auto"), .ext = try gpa.dupe(u8, "mp4"), .manifest = .{ .dash = try pg.absolute(gpa, base, u) }, .kind = .video });
     }
 
-    // A plain file: `og:video`, then `<video src>`, then `<source src>`.
+    // A plain file: `og:video`, `<video src>`, `<source src>`, JSON-LD, or
+    // an escaped `.mp4` sitting in script data.
     if (pg.meta(body, "og:video:url") orelse pg.meta(body, "og:video:secure_url") orelse pg.meta(body, "og:video")) |u| {
-        try addFile(gpa, base, u, .video, out);
+        if (pg.looksLikeFile(u) or std.mem.indexOf(u8, u, ".mp4") != null or std.mem.indexOf(u8, u, ".m3u8") != null) {
+            try addFile(gpa, base, u, .video, out);
+        }
     }
     if (pg.meta(body, "og:audio") orelse pg.meta(body, "og:audio:url")) |u| {
         try addFile(gpa, base, u, .audio, out);
@@ -206,8 +226,18 @@ fn markupFormats(gpa: std.mem.Allocator, base: []const u8, body: []const u8, out
         at = close;
     }
     // JSON-LD.
-    if (pg.findJson(body, "contentUrl")) |u| {
+    if (pg.findJson(body, "contentUrl")) |raw| {
+        const u = try pg.unescape(gpa, raw);
+        defer gpa.free(u);
         if (std.mem.startsWith(u8, u, "http")) try addFile(gpa, base, u, .video, out);
+    }
+    // An `.mp4` URL or PeerTube `/api/v1/videos/<id>` when the host is custom.
+    if (out.items.len == 0) {
+        if (pg.findAnyUrl(body, ".mp4")) |raw| {
+            const u = try pg.unescape(gpa, raw);
+            defer gpa.free(u);
+            try addFile(gpa, base, u, .video, out);
+        }
     }
 }
 
@@ -270,8 +300,8 @@ test "a reference resolves against its page" {
 }
 
 test "a manifest URL is found in a page" {
-    const body = "var src = \"https://cdn.x.com/hls/index.m3u8\";";
-    try std.testing.expectEqualStrings("https://cdn.x.com/hls/index.m3u8", pg.findAnyUrl(body, ".m3u8").?);
+    const body = "var src = \"https://cdn.x.com/hls/index.m3u8?token=abc\";";
+    try std.testing.expectEqualStrings("https://cdn.x.com/hls/index.m3u8?token=abc", pg.findAnyUrl(body, ".m3u8").?);
 }
 
 test "a bare playlist link is told from a page" {

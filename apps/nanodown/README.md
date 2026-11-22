@@ -48,14 +48,16 @@ never holds one whose Download button would fail.
   a licence server's, so the playlist is read, the encryption is seen, and the
   refusal comes before a byte is fetched rather than after a file that will not
   play. `AES-128` with a plain key URL is a different thing and is not refused.
-- **YouTube downloads.** The capture above works for sites that hand their
-  player a signed URL. YouTube now hands its web player a binary protocol
-  (`serverAbrStreamingUrl`, `application/vnd.yt-ump`) instead, and the plain
-  `videoplayback` URLs it also requests are signed for the address of the
-  machine that asked, not for yours. The format list is read and shown as the
-  site gives it, and the preview says plainly that the stream cannot be taken
-  rather than failing obscurely. Sites that do hand out a URL (Vimeo's HLS,
-  direct MP4s, most others) download normally.
+- **YouTube and Bilibili adaptive streams.** YouTube uses Innertube's iOS
+  client (`src/engine/sites_api.zig`) and Bilibili uses its public `view` and
+  `playurl` endpoints when the page omits `__playinfo__`. Separate video and
+  audio tracks (including fragmented MP4 `moof`/`mdat` streams) are fetched and
+  joined into one standard MP4 by `src/engine/mux.zig` and
+  `src/engine/mux_write.zig`.
+- **Browser capture (`⌘B`).** Any site that requires a sign-in or renders its
+  player in JavaScript can be opened in the built-in browser (`⌘B` or the globe
+  button); its network hook feeds `.m3u8`, `.mpd`, `.mp4`, `.m4a`, and `.webm`
+  requests straight back into the preview.
 - **Conversion.** The formats a site offers are the formats you get. There is no
   transcoding, because there is no FFmpeg: MP4 and M4A are what the engine can
   write.
@@ -67,7 +69,7 @@ src/main.zig          the entry: the window, and a link handed to it
 src/app.zig           the app's state: library, settings, licence, the queue
 src/view*.zig         the window: the field and list, a row, the preview, settings
 src/model/            media, download, library, settings, subscription, licence
-src/engine/           http, hls, dash, extract, sites, page, mux, job, capture
+src/engine/           http, hls, dash, extract, sites, sites_api, page, mux, job, capture
 src/capture_flow.zig  the hidden player, its media requests, the formats it named
 src/store.zig         the state files, and the string work a file name needs
 src/theme.zig         the palette, light and dark, in nanomon's warm ground

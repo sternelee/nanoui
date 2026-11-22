@@ -13,24 +13,36 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const media = @import("../model/media.zig");
 
-/// The hook, run in the page before its player starts. Every request the
-/// player makes for media is reported once, with the quality the URL carries.
+/// The hook, run in the page before its player starts. Every media URL or
+/// manifest request the player makes (HLS, DASH, MP4, M4A, WebM, MP3, or
+/// YouTube's googlevideo stream) is reported once.
 pub const hook =
     \\(() => {
     \\  if (window.__ndCapture) return;
     \\  window.__ndCapture = 1;
     \\  const seen = new Set();
+    \\  const isMedia = (u) => {
+    \\    if (!u || typeof u !== 'string') return false;
+    \\    if (u.startsWith('blob:') || u.startsWith('data:')) return false;
+    \\    if (u.includes('googlevideo.com')) return true;
+    \\    const path = u.split('?')[0].split('#')[0].toLowerCase();
+    \\    return /\.(m3u8|mpd|mp4|m4v|m4a|webm|mp3|mov|ts)$/.test(path) ||
+    \\      u.includes('/videoplayback') || u.includes('mime=video') || u.includes('mime=audio');
+    \\  };
+    \\  const isManifest = (u) => {
+    \\    if (u.includes('/api/manifest/')) return true;
+    \\    const path = u.split('?')[0].split('#')[0].toLowerCase();
+    \\    return path.endsWith('.m3u8') || path.endsWith('.mpd');
+    \\  };
     \\  const report = (u) => {
     \\    u = String(u || '');
-    \\    if (!u.includes('googlevideo.com')) return;
-    \\    if (u.includes('/api/manifest/')) {
-    \\      if (seen.has(u)) return;
-    \\      seen.add(u);
+    \\    if (!isMedia(u)) return;
+    \\    if (seen.has(u)) return;
+    \\    seen.add(u);
+    \\    if (isManifest(u)) {
     \\      try { window.nanoui.call('Capture.manifest', u); } catch (e) {}
     \\      return;
     \\    }
-    \\    if (seen.has(u)) return;
-    \\    seen.add(u);
     \\    try { window.nanoui.call('Capture.found', u); } catch (e) {}
     \\  };
     \\  const of = window.fetch;
@@ -50,6 +62,16 @@ pub const hook =
     \\      get() { return d.get.call(this); },
     \\    });
     \\  }
+    \\  const scanDom = () => {
+    \\    try {
+    \\      document.querySelectorAll('video,audio,source').forEach((el) => {
+    \\        if (el.currentSrc) report(el.currentSrc);
+    \\        if (el.src) report(el.src);
+    \\      });
+    \\    } catch (e) {}
+    \\  };
+    \\  setTimeout(scanDom, 800);
+    \\  setTimeout(scanDom, 2500);
     \\})();
 ;
 
@@ -119,14 +141,21 @@ pub fn labelOf(itag: u32) ?struct { label: []const u8, kind: media.Format.Kind, 
 pub fn formats(gpa: std.mem.Allocator, found: []const Found, out: *std.ArrayList(media.Format)) !void {
     for (found) |f| {
         const known = labelOf(f.itag);
-        const audio = if (known) |k| k.kind == .audio else std.mem.indexOf(u8, f.mime, "audio") != null;
-        const ext = if (known) |k| k.ext else if (std.mem.indexOf(u8, f.mime, "webm") != null) "webm" else "mp4";
-        // A URL without an itag is the ABR endpoint, which serves nothing
-        // without the player's own protocol: skip it rather than offer it.
-        if (f.itag == 0) continue;
+        const audio = if (known) |k| k.kind == .audio else (std.mem.indexOf(u8, f.mime, "audio") != null or std.mem.indexOf(u8, f.url, ".m4a") != null or std.mem.indexOf(u8, f.url, ".mp3") != null);
+        const ext = if (known) |k| k.ext else if (std.mem.indexOf(u8, f.mime, "webm") != null or std.mem.indexOf(u8, f.url, ".webm") != null) "webm" else if (audio) "m4a" else "mp4";
+        // A URL without an itag on YouTube/videoplayback is the ABR endpoint,
+        // which serves nothing without the player's own protocol: skip it.
+        if (f.itag == 0 and (std.mem.indexOf(u8, f.url, "googlevideo.com") != null or std.mem.indexOf(u8, f.url, "/videoplayback") != null)) continue;
+        const lbl = if (known) |k|
+            try gpa.dupe(u8, k.label)
+        else if (f.itag > 0)
+            try std.fmt.allocPrint(gpa, "itag {d}", .{f.itag})
+        else
+            try gpa.dupe(u8, if (audio) "Audio" else "Captured");
+        errdefer gpa.free(lbl);
         try out.append(gpa, .{
             .id = try std.fmt.allocPrint(gpa, "{d}", .{f.itag}),
-            .label = try gpa.dupe(u8, if (known) |k| k.label else try std.fmt.allocPrint(gpa, "itag {d}", .{f.itag})),
+            .label = lbl,
             .ext = try gpa.dupe(u8, ext),
             .url = try gpa.dupe(u8, f.url),
             .codec = try gpa.dupe(u8, ""),

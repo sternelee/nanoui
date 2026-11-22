@@ -145,6 +145,8 @@ pub const Download = struct {
     url: []const u8 = "",
     /// The file itself: one URL, or the manifest when it is streamed.
     media: []const u8 = "",
+    /// Companion audio URL when video and audio come as two separate files.
+    audio_url: []const u8 = "",
     title: []const u8 = "",
     site: media.Site = .generic,
     author: []const u8 = "",
@@ -180,20 +182,29 @@ pub const Download = struct {
     /// What it is doing while `processing`: "Merging", "Converting".
     stage: []const u8 = "",
 
-    /// Frees the strings this download owns. The library keeps its own
-    /// copies, so this is only for one built to be handed over.
     pub fn deinit(d: *Download, gpa: std.mem.Allocator) void {
-        gpa.free(d.url);
-        gpa.free(d.media);
-        gpa.free(d.title);
-        gpa.free(d.author);
-        gpa.free(d.quality);
-        gpa.free(d.ext);
-        gpa.free(d.path);
-        gpa.free(d.thumb);
-        gpa.free(d.date);
-        gpa.free(d.problem);
-        gpa.free(d.stage);
+        freeOwned(gpa, d.url);
+        freeOwned(gpa, d.media);
+        freeOwned(gpa, d.audio_url);
+        freeOwned(gpa, d.title);
+        freeOwned(gpa, d.author);
+        freeOwned(gpa, d.quality);
+        freeOwned(gpa, d.ext);
+        freeOwned(gpa, d.path);
+        freeOwned(gpa, d.thumb);
+        freeOwned(gpa, d.date);
+        freeOwned(gpa, d.problem);
+        freeOwned(gpa, d.stage);
+    }
+
+    pub fn freeOwned(gpa: std.mem.Allocator, s: []const u8) void {
+        if (s.len > 0) gpa.free(s);
+    }
+
+    pub fn setOwned(dst: *[]const u8, gpa: std.mem.Allocator, val: []const u8) void {
+        if (std.mem.eql(u8, dst.*, val)) return;
+        freeOwned(gpa, dst.*);
+        dst.* = if (val.len == 0) "" else (gpa.dupe(u8, val) catch "");
     }
 
     pub fn fraction(d: *const Download) f32 {

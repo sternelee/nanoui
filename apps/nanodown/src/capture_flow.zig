@@ -76,8 +76,8 @@ pub fn end(a: anytype) void {
     var usable: std.ArrayList(capture.Found) = .empty;
     defer usable.deinit(a.gpa);
     for (a.captured.items) |f| {
-        if (f.itag == 0) continue;
-        var p = httpz.probe(a.gpa, f.url, "");
+        if (f.itag == 0 and std.mem.indexOf(u8, f.url, "googlevideo.com") != null) continue;
+        var p = httpz.probe(a.gpa, f.url, m.url);
         defer p.deinit();
         if (p.status != 200 and p.status != 206) continue;
         usable.append(a.gpa, f) catch continue;
@@ -102,7 +102,12 @@ fn replaceFormats(a: anytype, m: *media.Media, fresh: []const media.Format) void
         a.gpa.free(f.label);
         a.gpa.free(f.ext);
         a.gpa.free(f.url);
+        a.gpa.free(f.audio_url);
         a.gpa.free(f.codec);
+        if (f.manifest) |man| switch (man) {
+            .hls => |u| a.gpa.free(u),
+            .dash => |u| a.gpa.free(u),
+        };
     }
     if (m.formats.len > 0) a.gpa.free(m.formats);
     var out: std.ArrayList(media.Format) = .empty;
@@ -112,6 +117,7 @@ fn replaceFormats(a: anytype, m: *media.Media, fresh: []const media.Format) void
             .label = a.gpa.dupe(u8, f.label) catch continue,
             .ext = a.gpa.dupe(u8, f.ext) catch continue,
             .url = a.gpa.dupe(u8, f.url) catch continue,
+            .audio_url = a.gpa.dupe(u8, f.audio_url) catch continue,
             .codec = a.gpa.dupe(u8, f.codec) catch continue,
             .manifest = if (f.manifest) |man| switch (man) {
                 .hls => |u| .{ .hls = a.gpa.dupe(u8, u) catch "" },
@@ -141,6 +147,55 @@ pub fn beginCapture(a: *App, link: []const u8, c: *ui.Context) void {
 /// Ends the capture: the window goes, and what the player named is listed.
 pub fn endCapture(a: *App) void {
     end(a);
+}
+
+/// Opens a visible browser window pointed at the current link (or a blank
+/// page / DuckDuckGo) with the media capture hook running on a persistent
+/// WebKit session so any sign-in or JS-signed player works.
+pub fn openBrowser(a: *App, c: ?*ui.Context) void {
+    const window = a.window orelse return;
+    const app = window.app;
+    if (a.browser_window) |bw| {
+        if (!bw.closed) {
+            bw.focus();
+            if (a.field.text().len > 0 and @import("store.zig").looksLikeLink(a.field.text())) {
+                bw.setPageUrl(a.field.text());
+            }
+            return;
+        }
+        a.browser_window = null;
+    }
+    const raw = std.mem.trim(u8, a.field.text(), " \t\r\n");
+    const target = if (raw.len > 0 and @import("store.zig").looksLikeLink(raw)) raw else "https://duckduckgo.com/";
+    const bw = app.newWindow(.{
+        .title = "nanodown Browser — play a video to capture it",
+        .width = 1040,
+        .height = 700,
+        .content = .{ .page = .{ .url = target, .inspectable = true } },
+    }) catch return;
+    a.browser_window = bw;
+    a.browser_capturing = true;
+    for (a.captured.items) |f| a.gpa.free(f.url);
+    a.captured.clearRetainingCapacity();
+    if (a.captured_manifest.len > 0) {
+        a.gpa.free(a.captured_manifest);
+        a.captured_manifest = "";
+    }
+    for ([_]u64{ 600, 1500, 3000, 5000, 8000, 12000 }) |ms| nanoui.App.after(ms, a, hookBrowser);
+    if (c) |ctx| a.say("Play any video in the browser to capture its stream", ctx);
+}
+
+fn hookBrowser(ctx: ?*anyopaque) callconv(.c) void {
+    const a: *App = @ptrCast(@alignCast(ctx));
+    const bw = a.browser_window orelse return;
+    if (bw.closed) {
+        a.browser_window = null;
+        a.browser_capturing = false;
+        return;
+    }
+    if (bw.page) |p| p.queue.eval(capture.hook);
+    // Keep re-injecting on navigation while the browser window stays open.
+    if (a.browser_capturing) nanoui.App.after(2500, a, hookBrowser);
 }
 
 /// The service the hidden page calls: `Capture.found(url)`.
@@ -184,6 +239,7 @@ pub fn tickCapture(a: *App) void {
 pub fn capturedManifest(a: *App, url: []const u8) void {
     if (a.captured_manifest.len > 0) return;
     a.captured_manifest = a.gpa.dupe(u8, url) catch "";
+    if (a.browser_capturing) surfaceCaptured(a);
 }
 
 /// The player asked for `url`.
@@ -197,4 +253,48 @@ pub fn capturedUrl(a: *App, url: []const u8) void {
         a.gpa.free(f.url);
         return;
     };
+    if (a.browser_capturing) surfaceCaptured(a);
+}
+
+fn surfaceCaptured(a: *App) void {
+    const page_url = if (a.browser_window) |bw| (if (bw.page) |p| p.queue.current_url else "") else "";
+    if (a.preview.item == null) {
+        var fmts: std.ArrayList(media.Format) = .empty;
+        if (a.captured_manifest.len > 0) {
+            fmts.append(a.gpa, .{
+                .id = a.gpa.dupe(u8, "hls") catch "",
+                .label = a.gpa.dupe(u8, "Auto") catch "",
+                .ext = a.gpa.dupe(u8, "mp4") catch "",
+                .manifest = .{ .hls = a.gpa.dupe(u8, a.captured_manifest) catch "" },
+                .kind = .video,
+            }) catch {};
+        } else {
+            capture.formats(a.gpa, a.captured.items, &fmts) catch {};
+        }
+        if (fmts.items.len == 0) {
+            fmts.deinit(a.gpa);
+            return;
+        }
+        a.preview.item = .{
+            .url = a.gpa.dupe(u8, page_url) catch "",
+            .site = media.Site.ofUrl(page_url),
+            .title = a.gpa.dupe(u8, if (page_url.len > 0) httpz.nameFromUrl(page_url) else "Browser capture") catch "",
+            .formats = fmts.toOwnedSlice(a.gpa) catch &.{},
+        };
+    } else if (a.preview.item) |*m| {
+        if (a.captured_manifest.len > 0) {
+            replaceFormats(a, m, &.{.{
+                .id = "manifest",
+                .label = "Auto",
+                .ext = "mp4",
+                .manifest = .{ .hls = a.captured_manifest },
+            }});
+        } else {
+            var fresh: std.ArrayList(media.Format) = .empty;
+            capture.formats(a.gpa, a.captured.items, &fresh) catch {};
+            if (fresh.items.len > 0) replaceFormats(a, m, fresh.items);
+            fresh.deinit(a.gpa);
+        }
+    }
+    if (a.window) |w| w.redrawFromAnyThread();
 }

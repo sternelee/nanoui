@@ -66,11 +66,15 @@ pub fn take(a: *App, c: *ui.Context) void {
     a.preview.reading = false;
     a.gpa.free(a.reader.link);
     a.reader.link = "";
-    // The page listed what it has but handed out no URL for any of it: it
-    // signs them in its player. Play it out of sight and take what it asks
-    // for.
+    // The page listed what it has without handing out a direct URL, OR no
+    // static markup held media on a JS-rendered site: play it in the hidden
+    // webview and capture the stream/file requests its own player makes.
     if (a.preview.item) |*m| {
-        if (m.formats.len > 0 and !anyFetchable(m)) a.beginCapture(a.preview.link, c);
+        if ((m.formats.len > 0 and !anyFetchable(m)) or
+            (m.formats.len == 0 and m.problem.len > 0 and std.mem.indexOf(u8, m.problem, "DRM") == null and m.site != .generic))
+        {
+            a.beginCapture(a.preview.link, c);
+        }
     }
     c.changed = true;
     c.requestFrameFromAnyThread();

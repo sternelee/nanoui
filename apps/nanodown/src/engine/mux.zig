@@ -106,10 +106,14 @@ pub fn readTrack(gpa: std.mem.Allocator, bytes: []const u8, want: Track.Kind) !T
         want: Track.Kind,
         found: bool = false,
         mdats: *std.ArrayList(Mdat),
+        trex_dur: u32 = 0,
+        trex_size: u32 = 0,
+        trex_flags: u32 = 0,
+        dts: u64 = 0,
     };
     var ctx: Ctx = .{ .gpa = gpa, .t = &t, .want = want, .mdats = &t.mdats };
 
-    // The top level: find `moov` and every `mdat`.
+    // The top level: find `moov`, every `mdat`, and any `moof` fragments.
     var i: usize = 0;
     while (i + 8 <= bytes.len) {
         const size = readU32(bytes, i);
@@ -126,6 +130,8 @@ pub fn readTrack(gpa: std.mem.Allocator, bytes: []const u8, want: Track.Kind) !T
             readMoov(&ctx, bytes, i + header, i + len);
         } else if (std.mem.eql(u8, &kind, "mdat")) {
             try t.mdats.append(gpa, .{ .start = i + header, .len = len - header });
+        } else if (std.mem.eql(u8, &kind, "moof") and ctx.found) {
+            readMoof(&ctx, bytes, i, i + header, i + len);
         }
         i += len;
     }
@@ -140,7 +146,135 @@ fn readMoov(ctx: anytype, bytes: []const u8, at: usize, end: usize) void {
         const kind: [4]u8 = bytes[i + 4 .. i + 8][0..4].*;
         if (size < 8 or i + size > end) return;
         if (std.mem.eql(u8, &kind, "trak")) readTrak(ctx, bytes, i + 8, i + size);
+        if (std.mem.eql(u8, &kind, "mvex")) readMvex(ctx, bytes, i + 8, i + size);
         i += size;
+    }
+}
+
+fn readMvex(ctx: anytype, bytes: []const u8, at: usize, end: usize) void {
+    var i = at;
+    while (i + 8 <= end) {
+        const size = readU32(bytes, i);
+        const kind: [4]u8 = bytes[i + 4 .. i + 8][0..4].*;
+        if (size < 8 or i + size > end) return;
+        if (std.mem.eql(u8, &kind, "trex") and size >= 32) {
+            ctx.trex_dur = readU32(bytes, i + 20);
+            ctx.trex_size = readU32(bytes, i + 24);
+            ctx.trex_flags = readU32(bytes, i + 28);
+        }
+        i += size;
+    }
+}
+
+/// Reads one `moof` fragment's `traf` (`tfhd`, `tfdt`, `trun`) into `ctx.t.samples`.
+fn readMoof(ctx: anytype, bytes: []const u8, moof_at: usize, at: usize, end: usize) void {
+    var i = at;
+    while (i + 8 <= end) {
+        const size = readU32(bytes, i);
+        const kind: [4]u8 = bytes[i + 4 .. i + 8][0..4].*;
+        if (size < 8 or i + size > end) return;
+        if (std.mem.eql(u8, &kind, "traf")) readTraf(ctx, bytes, moof_at, i + 8, i + size);
+        i += size;
+    }
+}
+
+fn readTraf(ctx: anytype, bytes: []const u8, moof_at: usize, at: usize, end: usize) void {
+    var base_off: u64 = moof_at;
+    var def_dur: u32 = ctx.trex_dur;
+    var def_size: u32 = ctx.trex_size;
+    var def_flags: u32 = ctx.trex_flags;
+    var trun_at: usize = 0;
+    var trun_end: usize = 0;
+
+    var i = at;
+    while (i + 8 <= end) {
+        const size = readU32(bytes, i);
+        const kind: [4]u8 = bytes[i + 4 .. i + 8][0..4].*;
+        if (size < 8 or i + size > end) return;
+        if (std.mem.eql(u8, &kind, "tfhd") and size >= 16) {
+            const flags = readU32(bytes, i + 8) & 0xffffff;
+            var p = i + 16;
+            if (flags & 0x000001 != 0 and p + 8 <= i + size) {
+                base_off = readU64(bytes, p);
+                p += 8;
+            }
+            if (flags & 0x000002 != 0 and p + 4 <= i + size) p += 4; // sample_description_index
+            if (flags & 0x000008 != 0 and p + 4 <= i + size) {
+                def_dur = readU32(bytes, p);
+                p += 4;
+            }
+            if (flags & 0x000010 != 0 and p + 4 <= i + size) {
+                def_size = readU32(bytes, p);
+                p += 4;
+            }
+            if (flags & 0x000020 != 0 and p + 4 <= i + size) def_flags = readU32(bytes, p);
+        } else if (std.mem.eql(u8, &kind, "tfdt") and size >= 16) {
+            const version = bytes[i + 8];
+            if (version == 1 and size >= 20) {
+                ctx.dts = readU64(bytes, i + 12);
+            } else {
+                ctx.dts = readU32(bytes, i + 12);
+            }
+        } else if (std.mem.eql(u8, &kind, "trun")) {
+            trun_at = i + 8;
+            trun_end = i + size;
+        }
+        i += size;
+    }
+    if (trun_at == 0 or trun_at + 8 > trun_end) return;
+    const flags = readU32(bytes, trun_at) & 0xffffff;
+    const count = readU32(bytes, trun_at + 4);
+    var p = trun_at + 8;
+    var data_off: i64 = 0;
+    if (flags & 0x000001 != 0 and p + 4 <= trun_end) {
+        data_off = @as(i32, @bitCast(readU32(bytes, p)));
+        p += 4;
+    }
+    var first_flags = def_flags;
+    if (flags & 0x000004 != 0 and p + 4 <= trun_end) {
+        first_flags = readU32(bytes, p);
+        p += 4;
+    }
+    var sample_off: u64 = @intCast(@max(0, @as(i64, @intCast(base_off)) + data_off));
+    var n: u32 = 0;
+    while (n < count) : (n += 1) {
+        var dur = def_dur;
+        var sz = def_size;
+        var sflags = if (n == 0) first_flags else def_flags;
+        var cts: i32 = 0;
+        if (flags & 0x000100 != 0) {
+            if (p + 4 > trun_end) break;
+            dur = readU32(bytes, p);
+            p += 4;
+        }
+        if (flags & 0x000200 != 0) {
+            if (p + 4 > trun_end) break;
+            sz = readU32(bytes, p);
+            p += 4;
+        }
+        if (flags & 0x000400 != 0) {
+            if (p + 4 > trun_end) break;
+            sflags = readU32(bytes, p);
+            p += 4;
+        }
+        if (flags & 0x000800 != 0) {
+            if (p + 4 > trun_end) break;
+            cts = @bitCast(readU32(bytes, p));
+            p += 4;
+        }
+        if (dur == 0) dur = 1;
+        // Bit 16 of sample_flags (`sample_is_non_sync_sample`) is 0 for sync.
+        const is_key = ctx.t.kind == .audio or (sflags & 0x00010000 == 0);
+        ctx.t.samples.append(ctx.gpa, .{
+            .offset = sample_off,
+            .size = sz,
+            .dts = ctx.dts,
+            .duration = dur,
+            .cts = cts,
+            .key = is_key,
+        }) catch break;
+        sample_off += sz;
+        ctx.dts += dur;
     }
 }
 

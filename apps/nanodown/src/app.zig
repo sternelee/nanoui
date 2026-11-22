@@ -85,6 +85,9 @@ pub const App = struct {
     folder: []const u8 = "",
     /// The window, once there is one.
     window: ?*nanoui.Window = null,
+    /// Interactive browser window (`⌘B` / globe button) for login-walled sites.
+    browser_window: ?*nanoui.Window = null,
+    browser_capturing: bool = false,
     /// The tab chosen, as `library.Filter`.
     tab: usize = 0,
     /// The row the pointer is over, for its hover.
@@ -156,6 +159,14 @@ pub const App = struct {
         a.thumbs.deinit();
         a.field.deinit();
         a.search.deinit();
+        if (a.browser_window) |bw| {
+            if (!bw.closed) bw.close();
+            a.browser_window = null;
+        }
+        a.browser_capturing = false;
+        for (a.captured.items) |f| a.gpa.free(f.url);
+        a.captured.deinit(a.gpa);
+        if (a.captured_manifest.len > 0) a.gpa.free(a.captured_manifest);
         a.gpa.free(a.folder);
         if (a.preview.link.len > 0) a.gpa.free(a.preview.link);
         if (a.preview.item) |*m| m.deinit(a.gpa);
@@ -219,6 +230,13 @@ pub const App = struct {
 
     // --- the capture ------------------------------------------------------
     // The capture's own state lives here; its running is in capture_flow.zig.
+
+    /// Opens a real browser window with the capture hook injected, so any
+    /// login-walled or JS-signed page can be signed in and played while its
+    /// media URLs flow straight back into the preview.
+    pub fn openBrowser(a: *App, c: *ui.Context) void {
+        capture_flow.openBrowser(a, c);
+    }
 
     /// Plays `link` in a window that is never shown, so its own player asks
     /// for the media and the signed URLs can be taken from it.
@@ -284,6 +302,7 @@ pub const App = struct {
                 .hls => |u| u,
                 .dash => |u| u,
             } else "") catch return,
+            .audio_url = a.gpa.dupe(u8, f.audio_url) catch return,
             .title = a.gpa.dupe(u8, if (m.title.len > 0) m.title else "Untitled") catch return,
             .site = m.site,
             .author = a.gpa.dupe(u8, m.author) catch return,
@@ -296,9 +315,8 @@ pub const App = struct {
             .state = .queued,
             .total_bytes = f.size,
             .live = m.live,
-            // Owned like the rest: `deinit` frees every string it holds.
-            .problem = a.gpa.dupe(u8, "") catch return,
-            .stage = a.gpa.dupe(u8, "") catch return,
+            .problem = "",
+            .stage = "",
         };
         const dest = a.destFor(d.title);
         defer a.gpa.free(dest);
@@ -337,7 +355,7 @@ pub const App = struct {
             const next = a.lib.nextQueued() orelse break;
             a.launch(next, c) catch {
                 next.state = .failed;
-                next.problem = a.gpa.dupe(u8, "could not start") catch "";
+                download.Download.setOwned(&next.problem, a.gpa, "could not start");
                 break;
             };
         }
@@ -352,6 +370,7 @@ pub const App = struct {
             .label = a.gpa.dupe(u8, d.quality) catch "",
             .ext = a.gpa.dupe(u8, d.ext) catch "",
             .url = a.gpa.dupe(u8, if (streamed) "" else d.media) catch "",
+            .audio_url = a.gpa.dupe(u8, d.audio_url) catch "",
             .manifest = if (streamed) (if (std.mem.endsWith(u8, d.media, ".m3u8"))
                 media.Manifest{ .hls = a.gpa.dupe(u8, d.media) catch "" }
             else
@@ -404,6 +423,7 @@ pub const App = struct {
         a.gpa.free(spec.format.label);
         a.gpa.free(spec.format.ext);
         a.gpa.free(spec.format.url);
+        a.gpa.free(spec.format.audio_url);
         if (spec.format.manifest) |m| switch (m) {
             .hls => |u| a.gpa.free(u),
             .dash => |u| a.gpa.free(u),
@@ -451,17 +471,18 @@ pub const App = struct {
                 .downloading => d.state = .running,
                 .merging, .writing => {
                     d.state = .processing;
-                    d.stage = "Finishing";
+                    const want = if (r.shared.stageOf() == .merging) "Merging" else "Finishing";
+                    download.Download.setOwned(&d.stage, a.gpa, want);
                 },
                 .done => {
                     d.state = .done;
+                    download.Download.setOwned(&d.stage, a.gpa, "");
                     d.done_bytes = if (d.total_bytes > 0) d.total_bytes else done;
                     d.speed = 0;
                     d.eta = -1;
                     d.finished_at = now.secs();
                     if (r.shared.wrote().len > 0) {
-                        a.gpa.free(d.path);
-                        d.path = a.gpa.dupe(u8, r.shared.wrote()) catch "";
+                        download.Download.setOwned(&d.path, a.gpa, r.shared.wrote());
                     }
                     a.finish(r, i);
                     a.save();
@@ -469,15 +490,15 @@ pub const App = struct {
                 },
                 .failed => {
                     const why = r.shared.why();
+                    download.Download.setOwned(&d.stage, a.gpa, "");
                     if (std.mem.eql(u8, why, "stopped")) {
                         d.state = .paused;
                     } else {
                         d.state = .failed;
-                        a.gpa.free(d.problem);
                         // A failed row with no reason is a row that cannot be
                         // acted on: when the worker did not say why, say that
                         // rather than leaving the line blank.
-                        d.problem = a.gpa.dupe(u8, if (why.len > 0) why else "the download stopped without saying why") catch "";
+                        download.Download.setOwned(&d.problem, a.gpa, if (why.len > 0) why else "the download stopped without saying why");
                     }
                     a.finish(r, i);
                     a.save();
@@ -517,8 +538,7 @@ pub const App = struct {
         if (a.lib.byId(id)) |d| {
             if (d.state == .paused or d.state == .stopped or d.state == .failed) {
                 d.state = .queued;
-                a.gpa.free(d.problem);
-                d.problem = a.gpa.dupe(u8, "") catch "";
+                download.Download.setOwned(&d.problem, a.gpa, "");
                 a.pump(c);
             }
         }

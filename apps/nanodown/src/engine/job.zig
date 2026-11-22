@@ -113,7 +113,10 @@ pub fn run(spec: Spec, shared: *Shared) void {
         }
     }
 
-    // One file: probe it, then fetch what is missing.
+    // One file (or a split video + audio pair that joins into one MP4).
+    if (spec.format.audio_url.len > 0) {
+        return runMuxed(spec, shared, ext);
+    }
     var p = httpz.probe(gpa, spec.format.url, spec.referer);
     defer p.deinit();
     if (p.problem.len > 0 and p.size == 0) return shared.fail(p.problem);
@@ -139,6 +142,66 @@ pub fn run(spec: Spec, shared: *Shared) void {
     // The bytes are all there: give them their name.
     shared.stage.store(@intFromEnum(Shared.Stage.writing), .release);
     finishFile(gpa, spec, part, ext, shared) catch return shared.fail("could not finish the file");
+}
+
+/// Fetches a video stream and its companion audio stream into `.v.part` and
+/// `.a.part`, then joins both tracks into one MP4 with `mux_write`.
+fn runMuxed(spec: Spec, shared: *Shared, ext: []const u8) void {
+    const gpa = spec.gpa;
+    var pv = httpz.probe(gpa, spec.format.url, spec.referer);
+    defer pv.deinit();
+    var pa = httpz.probe(gpa, spec.format.audio_url, spec.referer);
+    defer pa.deinit();
+    if (pv.problem.len > 0 and pv.size == 0) return shared.fail(pv.problem);
+    if (pa.problem.len > 0 and pa.size == 0) return shared.fail(pa.problem);
+    const v_total = if (spec.format.size > 0) spec.format.size else pv.size;
+    const a_total = pa.size;
+    shared.total.store(v_total + a_total, .release);
+    shared.stage.store(@intFromEnum(Shared.Stage.downloading), .release);
+
+    const v_part = std.fmt.allocPrint(gpa, "{s}.v.part", .{spec.dest}) catch return shared.fail("out of memory");
+    defer gpa.free(v_part);
+    const a_part = std.fmt.allocPrint(gpa, "{s}.a.part", .{spec.dest}) catch return shared.fail("out of memory");
+    defer gpa.free(a_part);
+
+    {
+        var vf = openPart(v_part) orelse return shared.fail("could not open the video file to write");
+        defer vf.close();
+        var vr = download.Ranges.init(gpa);
+        defer vr.deinit();
+        if (v_total > 0) vr.add(.{ .start = 0, .end = @min(vf.file.length(httpz.io()) catch 0, v_total) }) catch {};
+        const ov = httpz.fetchRanges(gpa, spec.format.url, spec.referer, &vf.file, &vr, 0, v_total, spec.connections, spec.rate, &shared.done, &shared.stop) catch {
+            return shared.fail("the video download could not start");
+        };
+        if (!ov.ok) return shared.fail(if (ov.problem.len > 0) ov.problem else "the video stopped early");
+    }
+    {
+        var af = openPart(a_part) orelse return shared.fail("could not open the audio file to write");
+        defer af.close();
+        var ar = download.Ranges.init(gpa);
+        defer ar.deinit();
+        if (a_total > 0) ar.add(.{ .start = 0, .end = @min(af.file.length(httpz.io()) catch 0, a_total) }) catch {};
+        const oa = httpz.fetchRanges(gpa, spec.format.audio_url, spec.referer, &af.file, &ar, 0, a_total, spec.connections, spec.rate, &shared.done, &shared.stop) catch {
+            return shared.fail("the audio download could not start");
+        };
+        if (!oa.ok) return shared.fail(if (oa.problem.len > 0) oa.problem else "the audio stopped early");
+    }
+
+    shared.stage.store(@intFromEnum(Shared.Stage.merging), .release);
+    const out_ext = if (std.mem.eql(u8, ext, "mp4") or std.mem.eql(u8, ext, "mov")) ext else "mp4";
+    const final = if (std.mem.endsWith(u8, spec.dest, out_ext))
+        gpa.dupe(u8, spec.dest) catch return shared.fail("out of memory")
+    else
+        std.fmt.allocPrint(gpa, "{s}.{s}", .{ spec.dest, out_ext }) catch return shared.fail("out of memory");
+    defer gpa.free(final);
+
+    join(gpa, v_part, a_part, final, spec.tags) catch {
+        return shared.fail("could not join the video and audio");
+    };
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteFile(httpz.io(), v_part) catch {};
+    cwd.deleteFile(httpz.io(), a_part) catch {};
+    shared.succeed(final);
 }
 
 /// A single file that needs no muxing: renamed, or converted.

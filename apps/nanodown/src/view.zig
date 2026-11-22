@@ -12,6 +12,7 @@ const library = @import("model/library.zig");
 const rows = @import("view_rows.zig");
 const preview = @import("view_preview.zig");
 const settings_view = @import("view_settings.zig");
+const store = @import("store.zig");
 
 /// The column the field, the tabs and the rows share: as wide as the window
 /// allows, up to the island. `wFull` with a `maxW` would clamp the width but
@@ -55,6 +56,54 @@ pub fn view(a: *App, c: *ui.Context) void {
     // A capture that has had its time ends on the clock, not on a thread.
     a.tickCapture();
     if (a.preview.capturing) c.animationFrame();
+
+    // Pressing Return while a link is already previewed starts downloading
+    // right away (`app.zig: start`), matching PRD "Return downloads" (when
+    // the top field isn't handling `r.submitted` itself).
+    if (a.preview.item != null and !a.show_settings and c.input.key == .enter and c.focus == 0) {
+        a.start(c);
+    }
+
+    // Keyboard shortcuts when the user is not typing in settings.
+    if (!a.show_settings) {
+        if (c.shortcut(.{ .key = 'l', .cmd = true })) {
+            a.field.focus();
+            c.changed = true;
+        } else if (c.shortcut(.{ .key = 'b', .cmd = true })) {
+            a.openBrowser(c);
+        } else if (c.shortcut(.{ .key = '1', .cmd = true })) {
+            a.tab = 0;
+            a.lib.filter = .all;
+            a.lib.selected = null;
+            c.changed = true;
+        } else if (c.shortcut(.{ .key = '2', .cmd = true })) {
+            a.tab = 1;
+            a.lib.filter = .videos;
+            a.lib.selected = null;
+            c.changed = true;
+        } else if (c.shortcut(.{ .key = '3', .cmd = true })) {
+            a.tab = 2;
+            a.lib.filter = .audio;
+            a.lib.selected = null;
+            c.changed = true;
+        } else if (c.shortcut(.{ .key = '4', .cmd = true })) {
+            a.tab = 3;
+            a.lib.filter = .failed;
+            a.lib.selected = null;
+            c.changed = true;
+        } else if (c.shortcut(.{ .key = '5', .cmd = true })) {
+            a.tab = 4;
+            a.lib.filter = .subscriptions;
+            a.lib.selected = null;
+            c.changed = true;
+        } else if (c.shortcut(.{ .key = ',', .cmd = true })) {
+            a.show_settings = true;
+            c.changed = true;
+        } else if (c.input.key == .escape and a.preview.item != null) {
+            a.clearPreview();
+            c.changed = true;
+        }
+    }
 
     const root = ui.div(c).sizeFull().column().bg(p.paper);
     defer root.end();
@@ -111,7 +160,20 @@ fn topBar(a: *App, c: *ui.Context, p: *const theme.Palette) void {
             .placeholder_color = p.faint,
             .select_all_on_focus = false,
         });
-        if (r.submitted) a.submit(c);
+        if (r.submitted) {
+            const txt = std.mem.trim(u8, a.field.text(), " \t\r\n");
+            if (a.preview.item != null and store.looksLikeLink(txt) and std.mem.eql(u8, txt, a.preview.link)) {
+                a.start(c);
+            } else {
+                a.submit(c);
+            }
+        }
+        if (r.changed and !store.looksLikeLink(std.mem.trim(u8, a.field.text(), " \t\r\n"))) {
+            // Instant live search while typing anything that isn't a link.
+            a.search.set(a.field.text());
+            a.lib.query = a.search.text();
+            c.changed = true;
+        }
         if (a.field.text().len == 0 and a.preview.item == null) {
             // The clipboard's link, offered rather than taken.
             if (a.clipboard_link.len > 0) {
@@ -123,6 +185,8 @@ fn topBar(a: *App, c: *ui.Context, p: *const theme.Palette) void {
         } else if (a.field.text().len > 0) {
             if (ui.button(c, "", .{ .variant = .ghost, .size = 12, .icon = "xmark" }).clicked) {
                 a.field.clear();
+                a.search.clear();
+                a.lib.query = "";
                 a.clearPreview();
                 c.changed = true;
             }
@@ -131,7 +195,7 @@ fn topBar(a: *App, c: *ui.Context, p: *const theme.Palette) void {
 
     // The browser, and settings: outside the field, on the same line.
     if (ui.button(c, "", .{ .variant = .ghost, .size = 13, .icon = "globe" }).clicked) {
-        a.say("The browser opens a page and catches what it plays", c);
+        a.openBrowser(c);
     }
     if (ui.button(c, "", .{ .variant = .ghost, .size = 13, .icon = "gearshape" }).clicked) {
         a.show_settings = true;
@@ -258,15 +322,18 @@ fn footer(a: *App, c: *ui.Context, p: *const theme.Palette) void {
             ui.text(c, c.print("Trial: {d} days left", .{left}), .{ .size = 11, .color = p.faint, .tabular = true });
         } else if (ui.button(c, "Get Pro", .{ .variant = .secondary, .size = 11 }).clicked) {
             a.show_settings = true;
-            a.settings_tab = 5;
+            a.settings_tab = 4;
             c.changed = true;
         }
     }
 }
 
 fn subscriptions(a: *App, c: *ui.Context, p: *const theme.Palette) void {
-    const area = ui.div(c).grow().wFull().column().px(theme.metrics.gutter).gap(6).scrollY();
+    // Subscriptions is the fifth tab: give it the same centered island column as the list.
+    const area = ui.div(c).grow().wFull().column().itemsCenter().px(theme.metrics.gutter).pt(10).pb(8);
     defer area.end();
+    const island = ui.div(c).grow().w(islandWidth(c)).column().gap(theme.metrics.row_gap);
+    defer island.end();
     if (a.subs.items.items.len == 0) {
         const box = ui.div(c).grow().wFull().column().itemsCenter().justifyCenter().gap(10);
         defer box.end();
@@ -275,23 +342,28 @@ fn subscriptions(a: *App, c: *ui.Context, p: *const theme.Palette) void {
         ui.text(c, "A channel or a playlist you follow shows its new videos here", .{ .size = 12, .color = p.faint });
         return;
     }
+    const scroll = ui.div(c).grow().wFull().column().gap(theme.metrics.row_gap).scrollY().scrollbar(.{ .overlay = p.faint });
+    defer scroll.end();
     for (a.subs.items.items) |*s| {
-        const row = ui.div(c).wFull().row().itemsCenter().gap(10).p(10).rounded(theme.metrics.radius).bg(p.raised).border(p.rule).borderW(1);
+        const row = ui.div(c).wFull().row().itemsCenter().gap(10).p(12).rounded(theme.metrics.radius).bg(p.raised).border(p.rule).borderW(1);
         defer row.end();
         ui.icon(c, "arrow.triangle.branch", .{ .size = 15, .color = p.accent });
         const col = ui.div(c).column().grow().gap(2);
         defer col.end();
         ui.text(c, s.title, .{ .size = 13, .weight = .medium, .color = p.ink, .truncate = .ellipsis });
-        ui.text(c, c.print("{s} · {s}", .{ s.site.title(), s.as.label() }), .{ .size = 11, .color = p.faint });
+        ui.text(c, c.print("{s} · {s}", .{ s.site.title(), s.as.label() }), .{ .size = 11, .color = p.dim });
         if (ui.button(c, "", .{ .variant = .ghost, .size = 12, .icon = "trash" }).clicked) {
             a.subs.remove(s.id);
+            a.save();
             c.changed = true;
         }
     }
 }
 
 fn toast(a: *App, c: *ui.Context, p: *const theme.Palette) void {
-    const box = ui.div(c).absolute().offset(theme.metrics.field_left, theme.metrics.top + 6).row().itemsCenter().gap(8).px(12).py(8).rounded(9).bg(p.ink).shadow(.{ .color = p.scrim, .blur = 16, .y = 4 });
+    // A toast centred at the top under the field, inside the island column.
+    const toast_x = @max(theme.metrics.gutter, (c.size.w - islandWidth(c)) / 2);
+    const box = ui.div(c).absolute().offset(toast_x, theme.metrics.top + 6).row().itemsCenter().gap(8).px(12).py(8).rounded(9).bg(p.ink).shadow(.{ .color = p.scrim, .blur = 16, .y = 4 });
     defer box.end();
     ui.text(c, a.toast, .{ .size = 12, .color = p.paper });
     // It goes on its own.

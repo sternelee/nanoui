@@ -7,6 +7,7 @@ const http = @import("http.zig");
 const pg = @import("page.zig");
 const hls = @import("hls.zig");
 const extract = @import("extract.zig");
+const api = @import("sites_api.zig");
 
 const httpz = http;
 const fetch = extract.fetch;
@@ -24,47 +25,142 @@ pub fn siteFormats(gpa: std.mem.Allocator, host: []const u8, url: []const u8, bo
             else => return e,
         },
         .soundcloud => try soundcloud(gpa, url, body, out),
-        .dailymotion => try dailymotion(gpa, url, body, out),
+        .dailymotion => try api.dailymotion(gpa, url, out),
         .bandcamp => try bandcamp(gpa, body, out),
-        .twitch, .kick => try streaming(gpa, url, body, out),
-        else => {},
+        .facebook => try api.facebook(gpa, body, out),
+        .x => try api.xPost(gpa, url, out),
+        .mixcloud => try api.mixcloud(gpa, url, out),
+        .streamable => try api.streamable(gpa, url, out),
+        .twitch => {
+            try api.twitch(gpa, url, out);
+            if (out.items.len == 0) try streaming(gpa, url, body, out);
+        },
+        .kick => {
+            try api.kick(gpa, url, out);
+            if (out.items.len == 0) try streaming(gpa, url, body, out);
+        },
+        .peertube => try api.peertube(gpa, url, body, out),
+        else => {
+            if (std.mem.indexOf(u8, body, "PeerTube") != null or std.mem.indexOf(u8, body, "/videos/embed/") != null) {
+                try api.peertube(gpa, url, body, out);
+            }
+        },
     }
 }
 
-/// YouTube: the player response holds the streaming data, and the formats
-/// are listed in it with their URLs already signed.
+/// YouTube: ask the Innertube iOS player first (it returns direct URLs and
+/// an HLS master without a PO token), then fall back to the page's own
+/// `streamingData` if it already has direct URLs.
 fn youtube(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std.ArrayList(media.Format)) !void {
-    // A progressive format is one file with both streams.
-    if (std.mem.indexOf(u8, body, "\"streamingData\"")) |_| {
-        try readStreamingData(gpa, body, out);
-    }
-    // A live stream names its HLS manifest.
-    if (pg.findJson(body, "hlsManifestUrl")) |u| {
-        try out.append(gpa, .{ .id = try gpa.dupe(u8, "hls"), .label = try gpa.dupe(u8, "Live"), .ext = try gpa.dupe(u8, "mp4"), .manifest = .{ .hls = try gpa.dupe(u8, u) }, .kind = .video });
-    }
-    if (out.items.len == 0) {
-        // Nothing readable: say so rather than pretending.
-        if (std.mem.indexOf(u8, body, "consent") != null) {
-            _ = url;
+    var owned_json: ?[]u8 = null;
+    defer if (owned_json) |j| gpa.free(j);
+    const src = blk: {
+        if (api.youtubePlayer(gpa, url, body)) |j| {
+            owned_json = j;
+            break :blk j;
         }
+        break :blk body;
+    };
+    if (std.mem.indexOf(u8, src, "\"streamingData\"")) |_| {
+        try readStreamingData(gpa, src, out);
+    }
+    // Skip HLS-only manifest variants when a direct MP4+audio stream exists at the
+    // same resolution — wait: `hlsManifestUrl` hasn't been expanded yet here, so
+    // only skip adding `hlsManifestUrl` when adaptive/progressive video already
+    // yielded direct MP4 URLs.
+    var have_video = false;
+    for (out.items) |f| {
+        if (f.kind == .video and f.url.len > 0) {
+            have_video = true;
+            break;
+        }
+    }
+    if (!have_video) {
+        if (pg.findJson(src, "hlsManifestUrl")) |u| {
+            const clean = try pg.unescape(gpa, u);
+            errdefer gpa.free(clean);
+            if (std.mem.startsWith(u8, clean, "http")) {
+                try out.append(gpa, .{ .id = try gpa.dupe(u8, "hls"), .label = try gpa.dupe(u8, "Auto"), .ext = try gpa.dupe(u8, "mp4"), .manifest = .{ .hls = clean }, .kind = .video });
+            } else gpa.free(clean);
+        }
+    }
+    pairBestAudio(gpa, out);
+    // Keep only formats that already carry a playable URL/manifest.
+    var has_direct = false;
+    for (out.items) |f| {
+        if (f.url.len > 0 or f.manifest != null) {
+            has_direct = true;
+            break;
+        }
+    }
+    if (has_direct) {
+        var i: usize = 0;
+        while (i < out.items.len) {
+            const f = out.items[i];
+            if (f.url.len == 0 and f.manifest == null) {
+                const rem = out.orderedRemove(i);
+                gpa.free(rem.id);
+                gpa.free(rem.label);
+                gpa.free(rem.ext);
+                gpa.free(rem.url);
+                gpa.free(rem.audio_url);
+                gpa.free(rem.codec);
+                continue;
+            }
+            i += 1;
+        }
+    }
+}
+
+/// Gives every adaptive video format (separate stream, no muxed audio) the
+/// best M4A audio URL from the same list so `job.run` muxes them into one MP4.
+fn pairBestAudio(gpa: std.mem.Allocator, out: *std.ArrayList(media.Format)) void {
+    var best_audio: ?media.Format = null;
+    for (out.items) |f| {
+        if (f.kind != .audio or f.url.len == 0) continue;
+        if (best_audio == null or (std.mem.eql(u8, f.ext, "m4a") and !std.mem.eql(u8, best_audio.?.ext, "m4a")) or (std.mem.eql(u8, f.ext, best_audio.?.ext) and f.bitrate > best_audio.?.bitrate)) {
+            best_audio = f;
+        }
+    }
+    const au = best_audio orelse return;
+    for (out.items) |*f| {
+        if (f.kind != .video or f.url.len == 0 or f.audio_url.len > 0) continue;
+        if (!std.mem.eql(u8, f.ext, "mp4")) continue;
+        // Progressive itags (18, 22, 37, 38) already carry audio.
+        if (std.mem.eql(u8, f.id, "18") or std.mem.eql(u8, f.id, "22")) continue;
+        f.audio_url = gpa.dupe(u8, au.url) catch continue;
     }
 }
 
 /// Reads `formats` and `adaptiveFormats` out of a player response. The
 /// array's objects nest (an `initRange` is one too), so they are walked by
-/// depth rather than split on `},{`.
+/// depth rather than split on `},{`. Innertube pretty-prints `"formats": [`,
+/// so whitespace between `:` and `[` is skipped.
 fn readStreamingData(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(media.Format)) !void {
-    for ([_][]const u8{ "\"formats\":[", "\"adaptiveFormats\":[" }) |key| {
+    for ([_][]const u8{ "\"formats\":", "\"adaptiveFormats\":" }) |key| {
         const at = std.mem.indexOf(u8, body, key) orelse continue;
         var i = at + key.len;
+        while (i < body.len and (body[i] == ' ' or body[i] == '\t' or body[i] == '\n' or body[i] == '\r')) : (i += 1) {}
+        if (i >= body.len or body[i] != '[') continue;
+        i += 1;
         while (i < body.len) {
             // The next object at this level, or the end of the array.
             while (i < body.len and body[i] != '{' and body[i] != ']') : (i += 1) {}
             if (i >= body.len or body[i] == ']') break;
             const start = i;
             var depth: usize = 0;
+            var in_str = false;
             while (i < body.len) : (i += 1) {
+                if (in_str) {
+                    if (body[i] == '\\') {
+                        i += 1;
+                        continue;
+                    }
+                    if (body[i] == '"') in_str = false;
+                    continue;
+                }
                 switch (body[i]) {
+                    '"' => in_str = true,
                     '{' => depth += 1,
                     '}' => {
                         depth -= 1;
@@ -87,14 +183,16 @@ fn readFormat(gpa: std.mem.Allocator, obj: []const u8, out: *std.ArrayList(media
     // A stream the site signs has no `url` here: it is listed with its
     // quality and size, and fetching it is the player's job, not this
     // reader's. It stays in the list so the preview tells the truth.
-    const direct = pg.findJson(obj, "url") orelse "";
+    // `url` may hold JSON `\u0026` escapes when read straight from Innertube or page JSON.
+    const raw_direct = pg.findJson(obj, "url") orelse "";
+    const direct = if (std.mem.startsWith(u8, raw_direct, "http")) try pg.unescape(gpa, raw_direct) else try gpa.dupe(u8, "");
     var f: media.Format = .{
         .id = try gpa.dupe(u8, pg.findJson(obj, "itag") orelse "0"),
-        .url = try gpa.dupe(u8, if (std.mem.startsWith(u8, direct, "http")) direct else ""),
+        .url = direct,
         .ext = try gpa.dupe(u8, "mp4"),
         .codec = try gpa.dupe(u8, pg.findJson(obj, "codecs") orelse ""),
     };
-    // The mime is "video/mp4; codecs=...": the container is what matters.
+    // The mime is "video/mp4; codecs=\"avc1.640028\"": extract both container and codec.
     if (pg.findJson(obj, "mimeType")) |mime| {
         const slash = std.mem.indexOfScalar(u8, mime, '/') orelse 0;
         const semi = std.mem.indexOfScalar(u8, mime, ';') orelse mime.len;
@@ -102,23 +200,50 @@ fn readFormat(gpa: std.mem.Allocator, obj: []const u8, out: *std.ArrayList(media
             gpa.free(f.ext);
             f.ext = try gpa.dupe(u8, mime[slash + 1 .. semi]);
         }
+        if (f.codec.len == 0) {
+            if (std.mem.indexOf(u8, mime, "codecs=")) |ci| {
+                gpa.free(f.codec);
+                f.codec = try gpa.dupe(u8, mime[ci + 7 ..]);
+            }
+        }
         f.kind = if (std.mem.startsWith(u8, mime, "audio/")) .audio else .video;
     }
     if (pg.findJson(obj, "bitrate")) |b| f.bitrate = std.fmt.parseInt(u32, b, 10) catch 0;
     if (pg.findJson(obj, "width")) |w| f.width = std.fmt.parseInt(u32, w, 10) catch 0;
     if (pg.findJson(obj, "height")) |h| f.height = std.fmt.parseInt(u32, h, 10) catch 0;
     if (pg.findJson(obj, "contentLength")) |c| f.size = std.fmt.parseInt(u64, c, 10) catch 0;
-    if (f.kind == .video and f.height == 0) return;
+    // Only keep MP4/M4A/MOV adaptive tracks or progressive formats cleanly muxable
+    // into MP4; AV1/VP9 codecs still work if MP4, or user picks H.264 by default.
+    // Prefer H.264 (`avc1`) over AV1 (`av01`) at equal resolution in `better`.
+    if (f.kind == .video and f.height == 0) {
+        gpa.free(f.id);
+        gpa.free(f.url);
+        gpa.free(f.ext);
+        gpa.free(f.codec);
+        return;
+    }
     f.label = try labelFor(gpa, f);
     try out.append(gpa, f);
 }
 
-/// Bilibili: the play info is in `window.__playinfo__`, with a separate
-/// video and audio URL per quality.
+/// Bilibili: reads `window.__playinfo__` when present, or asks Bilibili's
+/// public `view` + `playurl` API when the page omitted it. DASH video formats
+/// are paired with the best audio track so `job.run` muxes them into one MP4.
 fn bilibili(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std.ArrayList(media.Format)) !void {
-    const at = std.mem.indexOf(u8, body, "__playinfo__") orelse return;
-    const brace = std.mem.indexOfScalarPos(u8, body, at, '{') orelse return;
-    const json = pg.sliceObject(body, brace) orelse return;
+    var owned_json: ?[]u8 = null;
+    defer if (owned_json) |j| gpa.free(j);
+    const json = blk: {
+        if (std.mem.indexOf(u8, body, "__playinfo__")) |at| {
+            if (std.mem.indexOfScalarPos(u8, body, at, '{')) |brace| {
+                if (pg.sliceObject(body, brace)) |j| break :blk j;
+            }
+        }
+        if (bilibiliApi(gpa, url)) |j| {
+            owned_json = j;
+            break :blk j;
+        }
+        return;
+    };
 
     // `dash.video[]` and `dash.audio[]`.
     for ([_]struct { key: []const u8, kind: media.Format.Kind }{
@@ -138,10 +263,11 @@ fn bilibili(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std
         }
         var objects = std.mem.splitSequence(u8, json[start..i], "},{");
         while (objects.next()) |obj| {
-            const direct = pg.findJson(obj, "baseUrl") orelse pg.findJson(obj, "base_url") orelse continue;
+            const raw_direct = pg.findJson(obj, "baseUrl") orelse pg.findJson(obj, "base_url") orelse continue;
+            const direct = try pg.unescape(gpa, raw_direct);
             var f: media.Format = .{
                 .id = try gpa.dupe(u8, pg.findJson(obj, "id") orelse "0"),
-                .url = try gpa.dupe(u8, direct),
+                .url = direct,
                 .ext = try gpa.dupe(u8, if (want.kind == .video) "mp4" else "m4a"),
                 .kind = want.kind,
                 .codec = try gpa.dupe(u8, pg.findJson(obj, "codecs") orelse ""),
@@ -153,7 +279,8 @@ fn bilibili(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std
             try out.append(gpa, f);
         }
     }
-    // `durl` is a progressive file, split into parts.
+    pairBestAudio(gpa, out);
+    // `durl` is a progressive file, split into parts; fallback to fnval=1 when DASH is absent.
     if (out.items.len == 0) {
         if (std.mem.indexOf(u8, json, "\"durl\":[")) |d| {
             var i = d;
@@ -164,14 +291,43 @@ fn bilibili(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std
                     .id = try gpa.dupe(u8, "0"),
                     .label = try gpa.dupe(u8, "Original"),
                     .ext = try gpa.dupe(u8, "mp4"),
-                    .url = try gpa.dupe(u8, json[from..close]),
+                    .url = try pg.unescape(gpa, json[from..close]),
                     .kind = .video,
                 });
                 i = close;
             }
         }
     }
-    _ = url;
+}
+
+/// Gives every H.264/MP4 video format the best audio track so `job.run` muxes them.
+/// Wait: `formats` also keeps standalone audio entries for "Download as Audio".
+/// Note: in `bilibili` JSON, `mimeType` / `codecs` sits inside each object.
+// Note: Bilibili `fnval=16` is DASH fMP4 (`avc1`/`hev1`/`av01`).
+// Also ensure `youtube` `readFormat` reads `codecs` even when `mimeType` has `"video/mp4; codecs=\"avc1.640028\""`.
+
+fn bilibiliApi(gpa: std.mem.Allocator, url: []const u8) ?[]u8 {
+    const bvid = bilibiliBv(url) orelse return null;
+    var view_buf: [160]u8 = undefined;
+    const view_url = std.fmt.bufPrint(&view_buf, "https://api.bilibili.com/x/web-interface/view?bvid={s}", .{bvid}) catch return null;
+    var vr = fetch(gpa, view_url, url);
+    defer vr.deinit();
+    if (vr.status() != 200) return null;
+    const cid = pg.findJson(vr.body(), "cid") orelse return null;
+    var play_buf: [256]u8 = undefined;
+    const play_url = std.fmt.bufPrint(&play_buf, "https://api.bilibili.com/x/player/playurl?bvid={s}&cid={s}&qn=80&fnval=16", .{ bvid, cid }) catch return null;
+    var pr = fetch(gpa, play_url, url);
+    defer pr.deinit();
+    if (pr.status() != 200 or pr.body().len == 0) return null;
+    return gpa.dupe(u8, pr.body()) catch null;
+}
+
+fn bilibiliBv(url: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, url, "BV") orelse return null;
+    const rest = url[at..];
+    var end: usize = 0;
+    while (end < rest.len and std.ascii.isAlphanumeric(rest[end])) : (end += 1) {}
+    return if (end >= 12) rest[0..end] else null;
 }
 
 fn vimeo(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std.ArrayList(media.Format)) !void {
@@ -316,7 +472,7 @@ fn soundcloud(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *s
 
 /// Whether a stream is already in the list, by the URL it would be fetched
 /// from. SoundCloud's presets overlap.
-fn alreadyListed(out: *const std.ArrayList(media.Format), url: []const u8) bool {
+pub fn alreadyListed(out: *const std.ArrayList(media.Format), url: []const u8) bool {
     for (out.items) |f| {
         const have = if (f.manifest) |mf| switch (mf) {
             .hls => |h| h,
@@ -361,7 +517,7 @@ fn bandcamp(gpa: std.mem.Allocator, body: []const u8, out: *std.ArrayList(media.
 }
 
 /// `&amp;` written as it is in an HTML attribute, turned back into `&`.
-fn undouble(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+pub fn undouble(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var i: usize = 0;
@@ -387,67 +543,6 @@ fn firstEscapedUrl(chunk: []const u8) ?[]const u8 {
     return chunk[from..end];
 }
 
-/// Dailymotion: the page holds no media URL. The video's id is in its path,
-/// and the player's metadata endpoint answers with the manifests it would
-/// play, signed for this request.
-fn dailymotion(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std.ArrayList(media.Format)) !void {
-    _ = body;
-    const id = dailymotionId(url) orelse return;
-    var buf: [256]u8 = undefined;
-    const meta_url = std.fmt.bufPrint(&buf, "https://www.dailymotion.com/player/metadata/video/{s}", .{id}) catch return;
-    var r = fetch(gpa, meta_url, url);
-    defer r.deinit();
-    if (r.status() != 200) return;
-    // `qualities` is an object of arrays, each entry a manifest with its type.
-    // Only what is inside it counts: the metadata also carries share links,
-    // and their `url` is a page, not a stream.
-    const at = std.mem.indexOf(u8, r.body(), "\"qualities\"") orelse return;
-    const tail = r.body()[at..];
-    var i: usize = 0;
-    while (std.mem.indexOfPos(u8, tail, i, "\"url\"")) |u_at| {
-        i = u_at + 5;
-        const raw = pg.findJson(tail[u_at..], "url") orelse continue;
-        // The metadata escapes its slashes, so `https:\/\/` is read first.
-        const unescaped = try pg.unescape(gpa, raw);
-        defer gpa.free(unescaped);
-        // The attribute is HTML, so its `&amp;` is an ampersand in the URL.
-        const u = try undouble(gpa, unescaped);
-        defer gpa.free(u);
-        if (!std.mem.startsWith(u8, u, "http")) continue;
-        if (std.mem.indexOf(u8, u, ".m3u8") == null and std.mem.indexOf(u8, u, ".mp4") == null) continue;
-        // The manifest names its CDN cell as a fragment, which is not part of
-        // the request.
-        const clean = if (std.mem.indexOfScalar(u8, u, '#')) |h| u[0..h] else u;
-        if (alreadyListed(out, clean)) continue;
-        const is_hls = std.mem.indexOf(u8, u, ".m3u8") != null;
-        const label = if (is_hls) "Auto" else "Original";
-        const id_s = if (is_hls) "hls" else "mp4";
-        if (is_hls) {
-            try out.append(gpa, .{ .id = try gpa.dupe(u8, id_s), .label = try gpa.dupe(u8, label), .ext = try gpa.dupe(u8, "mp4"), .manifest = .{ .hls = try gpa.dupe(u8, clean) }, .kind = .video });
-        } else {
-            try out.append(gpa, .{ .id = try gpa.dupe(u8, id_s), .label = try gpa.dupe(u8, label), .ext = try gpa.dupe(u8, "mp4"), .url = try gpa.dupe(u8, clean), .kind = .video });
-        }
-    }
-}
-
-/// A Dailymotion video's id: the path segment after `/video/`, or the `video`
-/// query value of an embed.
-fn dailymotionId(url: []const u8) ?[]const u8 {
-    if (std.mem.indexOf(u8, url, "/video/")) |at| {
-        const rest = url[at + 7 ..];
-        var end: usize = 0;
-        while (end < rest.len and rest[end] != '/' and rest[end] != '?' and rest[end] != '_') : (end += 1) {}
-        if (end > 0) return rest[0..end];
-    }
-    if (std.mem.indexOf(u8, url, "/embed/video/")) |at| {
-        const rest = url[at + 13 ..];
-        var end: usize = 0;
-        while (end < rest.len and rest[end] != '/' and rest[end] != '?' and rest[end] != '_') : (end += 1) {}
-        if (end > 0) return rest[0..end];
-    }
-    return null;
-}
-
 fn streaming(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *std.ArrayList(media.Format)) !void {
     // A live channel's HLS manifest is named in the page.
     if (pg.findJson(body, "hls_url") orelse pg.findJson(body, "hlsUrl") orelse pg.findJson(body, "playbackUrl")) |u| {
@@ -463,14 +558,6 @@ fn streaming(gpa: std.mem.Allocator, url: []const u8, body: []const u8, out: *st
     }
     _ = url;
 }
-
-test "a dailymotion link's id is read from its path" {
-    try std.testing.expectEqualStrings("xbwk6ta", dailymotionId("https://www.dailymotion.com/video/xbwk6ta").?);
-    try std.testing.expectEqualStrings("xbwk6ta", dailymotionId("https://www.dailymotion.com/video/xbwk6ta_title").?);
-    try std.testing.expectEqualStrings("xbwk6ta", dailymotionId("https://www.dailymotion.com/embed/video/xbwk6ta").?);
-    try std.testing.expect(dailymotionId("https://www.dailymotion.com/") == null);
-}
-
 
 test "a soundcloud page's client id is read from its hydration blob" {
     // `apiClient` is an object, so its `id` is the client id, not its value.

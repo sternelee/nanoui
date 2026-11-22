@@ -101,7 +101,8 @@ pub fn sliceObject(body: []const u8, at: usize) ?[]const u8 {
     return null;
 }
 
-/// The first URL in the page that ends with `suffix`.
+/// The first URL in the page that holds `suffix` in its path (keeping any
+/// query string that signs it).
 pub fn findAnyUrl(body: []const u8, suffix: []const u8) ?[]const u8 {
     var at: usize = 0;
     while (std.mem.indexOfPos(u8, body, at, suffix)) |i| {
@@ -109,9 +110,16 @@ pub fn findAnyUrl(body: []const u8, suffix: []const u8) ?[]const u8 {
         var start = i;
         while (start > 0) : (start -= 1) {
             const ch = body[start - 1];
-            if (ch == '"' or ch == '\'' or ch == ' ' or ch == '(' or ch == '=' or ch == '\n' or ch == '\t') break;
+            if (ch == '"' or ch == '\'' or ch == ' ' or ch == '(' or ch == '=' or ch == '\n' or ch == '\t' or ch == '<' or ch == '>') break;
         }
-        const url = body[start..i + suffix.len];
+        // Continue past `suffix` until the enclosing quote/whitespace/tag ends
+        // so signed playlists like `master.m3u8?token=abc` keep their query.
+        var end = i + suffix.len;
+        while (end < body.len) : (end += 1) {
+            const ch = body[end];
+            if (ch == '"' or ch == '\'' or ch == ' ' or ch == ')' or ch == '\n' or ch == '\r' or ch == '\t' or ch == '<' or ch == '>' or ch == '\\') break;
+        }
+        const url = body[start..end];
         if (std.mem.startsWith(u8, url, "http") or std.mem.startsWith(u8, url, "/")) return url;
         at = i + suffix.len;
     }
@@ -203,6 +211,63 @@ pub fn unescape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
             else => next,
         });
         i += 2;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// HTML character references (`&amp;`, `&quot;`, `&#x27;`, `&#39;`, `&#xNN;`,
+/// `&#NNN;`) turned back into UTF-8 so page titles and meta tags read cleanly.
+pub fn decodeHtml(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] != '&') {
+            try out.append(gpa, s[i]);
+            i += 1;
+            continue;
+        }
+        const semi = std.mem.indexOfScalarPos(u8, s, i + 1, ';') orelse {
+            try out.append(gpa, s[i]);
+            i += 1;
+            continue;
+        };
+        const ent = s[i + 1 .. semi];
+        if (ent.len > 10) {
+            try out.append(gpa, s[i]);
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, ent, "amp")) {
+            try out.append(gpa, '&');
+        } else if (std.mem.eql(u8, ent, "quot")) {
+            try out.append(gpa, '"');
+        } else if (std.mem.eql(u8, ent, "apos")) {
+            try out.append(gpa, '\'');
+        } else if (std.mem.eql(u8, ent, "lt")) {
+            try out.append(gpa, '<');
+        } else if (std.mem.eql(u8, ent, "gt")) {
+            try out.append(gpa, '>');
+        } else if (std.mem.eql(u8, ent, "nbsp")) {
+            try out.append(gpa, ' ');
+        } else if (std.mem.startsWith(u8, ent, "#x") or std.mem.startsWith(u8, ent, "#X")) {
+            if (std.fmt.parseInt(u21, ent[2..], 16)) |cp| {
+                var buf: [4]u8 = undefined;
+                if (std.unicode.utf8Encode(if (cp == 0xa0) ' ' else cp, &buf)) |n| {
+                    try out.appendSlice(gpa, buf[0..n]);
+                } else |_| try out.appendSlice(gpa, s[i .. semi + 1]);
+            } else |_| try out.appendSlice(gpa, s[i .. semi + 1]);
+        } else if (std.mem.startsWith(u8, ent, "#")) {
+            if (std.fmt.parseInt(u21, ent[1..], 10)) |cp| {
+                var buf: [4]u8 = undefined;
+                if (std.unicode.utf8Encode(if (cp == 0xa0) ' ' else cp, &buf)) |n| {
+                    try out.appendSlice(gpa, buf[0..n]);
+                } else |_| try out.appendSlice(gpa, s[i .. semi + 1]);
+            } else |_| try out.appendSlice(gpa, s[i .. semi + 1]);
+        } else {
+            try out.appendSlice(gpa, s[i .. semi + 1]);
+        }
+        i = semi + 1;
     }
     return out.toOwnedSlice(gpa);
 }

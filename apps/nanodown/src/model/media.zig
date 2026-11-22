@@ -137,6 +137,8 @@ pub const Format = struct {
     kind: Kind = .video,
     /// The URL to fetch, when the format is one file.
     url: []const u8 = "",
+    /// Companion audio URL when a site splits video and audio (YouTube, Bilibili).
+    audio_url: []const u8 = "",
     /// The manifest, when the format is many segments.
     manifest: ?Manifest = null,
     /// Bits a second, for ordering.
@@ -155,6 +157,10 @@ pub const Format = struct {
     pub fn better(f: Format, other: Format) bool {
         if (f.kind != other.kind) return f.kind == .video;
         if (f.height != other.height) return f.height > other.height;
+        // At equal resolution, H.264 (`avc1`) plays everywhere (QuickTime, Safari).
+        const f_avc = std.mem.indexOf(u8, f.codec, "avc1") != null;
+        const o_avc = std.mem.indexOf(u8, other.codec, "avc1") != null;
+        if (f_avc != o_avc) return f_avc;
         return f.bitrate > other.bitrate;
     }
 };
@@ -228,6 +234,7 @@ pub const Media = struct {
             gpa.free(f.label);
             gpa.free(f.ext);
             gpa.free(f.url);
+            gpa.free(f.audio_url);
             gpa.free(f.codec);
             if (f.manifest) |man| switch (man) {
                 .hls => |u| gpa.free(u),
@@ -276,6 +283,11 @@ test "a host maps to its site" {
 }
 
 test "the best format respects the ceiling" {
+    // Check `best(.video, 0)` picks H.264 before AV1 at equal resolution.
+    const avc: Format = .{ .label = "1080p", .height = 1080, .codec = "avc1.640028", .bitrate = 4000, .kind = .video };
+    const av1: Format = .{ .label = "1080p", .height = 1080, .codec = "av01.0.08M", .bitrate = 1500, .kind = .video };
+    try std.testing.expect(avc.better(av1));
+    try std.testing.expect(!av1.better(avc));
     const formats = [_]Format{
         .{ .label = "2160p", .height = 2160, .kind = .video },
         .{ .label = "1080p", .height = 1080, .kind = .video },
@@ -293,4 +305,12 @@ test "a quality parses as the CLI writes it" {
     try std.testing.expectEqual(@as(u32, 0), Quality.parse("best").?.height);
     try std.testing.expectEqual(@as(u32, 720), Quality.parse("720").?.height);
     try std.testing.expect(Quality.parse("good") == null);
+}
+
+test "sites map shortlinks and subdomains cleanly" {
+    try std.testing.expectEqual(Site.bilibili, Site.ofHost("b23.tv"));
+    try std.testing.expectEqual(Site.x, Site.ofHost("twitter.com"));
+    try std.testing.expectEqual(Site.bandcamp, Site.ofHost("akaruiakachan.bandcamp.com"));
+    try std.testing.expectEqual(Site.kick, Site.ofHost("kick.com"));
+    try std.testing.expectEqual(Site.twitch, Site.ofHost("clips.twitch.tv"));
 }

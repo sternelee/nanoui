@@ -230,7 +230,7 @@ fn licence(a: *App, c: *ui.Context, p: *const theme.Palette) void {
     defer col.end();
     ui.text(c, if (a.pro()) "Pro" else "Free", .{ .size = 16, .weight = .semibold, .color = p.ink });
     if (a.pro()) {
-        ui.text(c, "Every format, every connection, the command line and the AI agent.", .{ .size = 11, .color = p.dim, .wrap = true });
+        ui.text(c, "Every format, every connection, and subscriptions.", .{ .size = 11, .color = p.dim, .wrap = true });
         if (a.licence.key.len > 0) {
             ui.text(c, c.print("Key {s}", .{a.licence.key}), .{ .size = 11, .color = p.faint, .mono = true });
         }
@@ -259,7 +259,6 @@ fn licence(a: *App, c: *ui.Context, p: *const theme.Palette) void {
         "Your own file names, and media server folders",
         "Channels and playlists you follow",
         "Recording a live stream",
-        "The nanodown command, and the AI agent",
     };
     for (adds) |line| {
         const r = ui.div(c).row().itemsCenter().gap(7);

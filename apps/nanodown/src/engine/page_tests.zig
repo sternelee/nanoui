@@ -41,6 +41,6 @@ test "a reference resolves against its page" {
 }
 
 test "a manifest URL is found in a page" {
-    const body = "var src = \"https://cdn.x.com/hls/index.m3u8\";";
-    try std.testing.expectEqualStrings("https://cdn.x.com/hls/index.m3u8", page.findAnyUrl(body, ".m3u8").?);
+    const body = "var src = \"https://cdn.x.com/hls/index.m3u8?token=abc\";";
+    try std.testing.expectEqualStrings("https://cdn.x.com/hls/index.m3u8?token=abc", page.findAnyUrl(body, ".m3u8").?);
 }

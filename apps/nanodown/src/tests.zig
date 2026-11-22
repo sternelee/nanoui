@@ -15,6 +15,8 @@ test {
     _ = @import("engine/mux_write.zig");
     _ = @import("engine/mux_tests.zig");
     _ = @import("engine/extract.zig");
+    _ = @import("engine/sites.zig");
+    _ = @import("engine/sites_api.zig");
     _ = @import("engine/manifest.zig");
     _ = @import("engine/page_tests.zig");
     _ = @import("engine/capture.zig");

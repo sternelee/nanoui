@@ -30,6 +30,12 @@ pub fn draw(a: *App, c: *ui.Context, p: *const theme.Palette) void {
         problem(a, c, p, m);
         return;
     }
+    if (a.preview.capturing) {
+        const cap = ui.div(c).row().itemsCenter().gap(6);
+        defer cap.end();
+        nanoui.kit.spinner(c, .{ .size = 11, .color = p.accent });
+        ui.text(c, "Reading signed stream in background…", .{ .size = 11, .color = p.dim });
+    }
     qualities(a, c, p, m);
     saveAs(a, c, p, m);
     trim(a, c, p, m);
@@ -62,44 +68,57 @@ fn cover(a: *App, c: *ui.Context, p: *const theme.Palette, m: *const media.Media
 }
 
 fn heading(a: *App, c: *ui.Context, p: *const theme.Palette, m: *const media.Media) void {
-    _ = a;
-    const row = ui.div(c).row().itemsStart().gap(8);
+    const row = ui.div(c).wFull().row().itemsStart().gap(8);
     defer row.end();
-    const col = ui.div(c).column().grow().gap(2);
-    defer col.end();
-    ui.text(c, if (m.title.len > 0) m.title else "Untitled", .{ .size = 15, .weight = .semibold, .color = p.ink, .truncate = .ellipsis, .max_lines = 2, .wrap = true });
-    // The line is built in the frame's arena: the text is laid out after
-    // this view returns, so a stack buffer would be gone by then.
-    var meta: std.ArrayList(u8) = .empty;
-    // The site, then the author when it is not the site's own name, then
-    // the date: "Vimeo · 2013-05-08", not "Vimeo · Vimeo". A link that is
-    // just a file has no site to name: "the web" is a placeholder, not
-    // something worth a line.
-    const site_name = if (m.site == .generic) "" else m.site.title();
-    const parts = [_][]const u8{ site_name, m.author, m.date };
-    for (parts) |b| {
-        if (b.len == 0) continue;
-        if (std.mem.eql(u8, b, site_name) and meta.items.len > 0) continue;
-        if (meta.items.len > 0) meta.appendSlice(c.alloc(), " · ") catch {};
-        meta.appendSlice(c.alloc(), b) catch {};
+    {
+        const col = ui.div(c).column().grow().gap(2);
+        defer col.end();
+        ui.text(c, if (m.title.len > 0) m.title else "Untitled", .{ .size = 15, .weight = .semibold, .color = p.ink, .truncate = .ellipsis, .max_lines = 2, .wrap = true });
+        // The line is built in the frame's arena: the text is laid out after
+        // this view returns, so a stack buffer would be gone by then.
+        var meta: std.ArrayList(u8) = .empty;
+        // The site, then the author when it is not the site's own name, then
+        // the date: "Vimeo · 2013-05-08", not "Vimeo · Vimeo". A link that is
+        // just a file has no site to name: "the web" is a placeholder, not
+        // something worth a line.
+        const site_name = if (m.site == .generic) "" else m.site.title();
+        const parts = [_][]const u8{ site_name, m.author, m.date };
+        for (parts) |b| {
+            if (b.len == 0) continue;
+            if (std.mem.eql(u8, b, site_name) and meta.items.len > 0) continue;
+            if (meta.items.len > 0) meta.appendSlice(c.alloc(), " · ") catch {};
+            meta.appendSlice(c.alloc(), b) catch {};
+        }
+        if (m.duration > 0) {
+            var buf: [16]u8 = undefined;
+            const clock = c.alloc().dupe(u8, download.Download.clock(m.duration, &buf)) catch "";
+            if (meta.items.len > 0) meta.appendSlice(c.alloc(), " · ") catch {};
+            meta.appendSlice(c.alloc(), clock) catch {};
+        }
+        if (meta.items.len > 0) ui.text(c, meta.items, .{ .size = 11, .color = p.dim, .tabular = true });
     }
-    if (m.duration > 0) {
-        var buf: [16]u8 = undefined;
-        const clock = c.alloc().dupe(u8, download.Download.clock(m.duration, &buf)) catch "";
-        if (meta.items.len > 0) meta.appendSlice(c.alloc(), " · ") catch {};
-        meta.appendSlice(c.alloc(), clock) catch {};
+    if (ui.button(c, "", .{ .variant = .ghost, .size = 11, .icon = "xmark" }).clicked) {
+        a.clearPreview();
+        c.changed = true;
     }
-    if (meta.items.len > 0) ui.text(c, meta.items, .{ .size = 11, .color = p.dim, .tabular = true });
 }
 
 fn problem(a: *App, c: *ui.Context, p: *const theme.Palette, m: *const media.Media) void {
     const box = ui.div(c).wFull().row().itemsStart().gap(8).p(10).rounded(8).bg(p.well);
     defer box.end();
     ui.icon(c, "exclamationmark.triangle", .{ .size = 13, .color = p.bad });
-    const col = ui.div(c).column().grow().gap(3);
+    const col = ui.div(c).column().grow().gap(6);
     defer col.end();
     ui.text(c, m.problem, .{ .size = 12, .color = p.ink, .wrap = true });
-    ui.text(c, "Its player was run here to see what it asks for, and what it asked for answers this engine with a refusal. A site that signs a stream for the machine that asked cannot be taken from another.", .{ .size = 11, .color = p.faint, .wrap = true });
+    ui.text(c, "If the site needs a sign-in or runs its player only in a live page, open it in the built-in browser and play the video to capture it.", .{ .size = 11, .color = p.faint, .wrap = true });
+    const acts = ui.div(c).row().itemsCenter().gap(8);
+    defer acts.end();
+    if (std.mem.indexOf(u8, m.problem, "DRM") == null) {
+        if (ui.button(c, "Open in Browser", .{ .variant = .secondary, .size = 11, .icon = "globe" }).clicked) {
+            a.field.set(m.url);
+            a.openBrowser(c);
+        }
+    }
     if (ui.button(c, "Dismiss", .{ .variant = .ghost, .size = 11 }).clicked) {
         a.clearPreview();
         c.changed = true;
@@ -111,11 +130,21 @@ fn qualities(a: *App, c: *ui.Context, p: *const theme.Palette, m: *const media.M
     const label = ui.div(c).row().itemsCenter().gap(6);
     defer label.end();
     ui.text(c, "Quality", .{ .size = 11, .color = p.faint });
-    const row = ui.div(c).row().itemsCenter().gap(5).wFull();
+    const row = ui.div(c).row().itemsCenter().gap(5).wFull().clip();
     defer row.end();
     var shown: usize = 0;
     for (m.formats, 0..) |f, i| {
-        if (shown >= 8) break;
+        if (shown >= 5) break;
+        // Skip duplicate labels (e.g. multiple CDNs at the same height) so the
+        // chip strip keeps distinct qualities rather than repeating "480p".
+        var dup = false;
+        for (m.formats[0..i]) |prev| {
+            if (std.mem.eql(u8, prev.label, f.label) and prev.kind == f.kind) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
         shown += 1;
         const on = a.preview.picked == i;
         var chip = ui.div(c).row().itemsCenter().gap(5).px(9).h(24).rounded(6).control();
